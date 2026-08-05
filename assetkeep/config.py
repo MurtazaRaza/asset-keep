@@ -275,7 +275,9 @@ def save(config: Config, path: Path | None = None) -> Path:
     if config.roots:
         document["root"] = [_root_table(root) for root in config.roots]
 
-    path.write_text(tomli_w.dumps(document))
+    # Explicit UTF-8: the platform default is cp1252 on Windows, and a root
+    # path with a non-ASCII folder name in it would fail to write at all.
+    path.write_text(tomli_w.dumps(document), encoding="utf-8")
     return path
 
 
@@ -344,10 +346,17 @@ def _optional_path(value: object) -> Path | None:
 def _contract(path: Path) -> str:
     """Inverse of ``expanduser`` for display and write-back.
 
-    >>> _contract(Path.home() / "AssetKeep" / "index.db")
-    '~/AssetKeep/index.db'
-    >>> _contract(Path("/opt/homebrew/lib/libassimp.dylib"))
-    '/opt/homebrew/lib/libassimp.dylib'
+    The property asserted is the round trip rather than a literal string,
+    because the separator in that string is ``/`` on one of the machines this
+    runs on and ``\\`` on the other, and the round trip is what the function is
+    actually for.
+
+    >>> inside = Path.home() / "AssetKeep" / "index.db"
+    >>> _contract(inside).startswith("~"), Path(_contract(inside)).expanduser() == inside
+    (True, True)
+    >>> outside = Path(Path.home().anchor) / "opt" / "lib" / "assimp"
+    >>> _contract(outside) == str(outside)
+    True
     """
     home = Path.home()
     if path == home or home in path.parents:

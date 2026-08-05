@@ -14,10 +14,11 @@ else's dependency. Note that both *raise on import* when the library is missing,
 rather than failing to import, so the chain catches exceptions rather than
 :class:`ImportError` alone.
 
-macOS gets one extra courtesy: ``/opt/homebrew/lib`` is added to the search path
-before either binding is imported. Neither looks there, Apple Silicon Homebrew
-installs there and nowhere else, and without it ``brew install assimp`` appears
-to do nothing at all.
+Before either binding is imported, the usual install locations for this platform
+are added to its search path - see :data:`PLATFORM_LIBRARY_HINTS`. Neither
+binding looks in any of them on its own, so without this ``brew install assimp``
+appears to do nothing at all, and on Windows a correctly installed ``assimp.dll``
+is invisible for the same reason.
 
 **A sibling image sharing the model's basename beats any render.** Asset packs
 ship these constantly, and a preview drawn by the person who made the model
@@ -28,11 +29,12 @@ from __future__ import annotations
 
 import functools
 import logging
-import os
+import sys
 from pathlib import Path
 
 import numpy as np
 
+from .. import desktop
 from . import CONTROL_FLOW, ProbeResult
 
 log = logging.getLogger(__name__)
@@ -43,8 +45,24 @@ ASSIMP_EXTENSIONS = frozenset({".fbx", ".dae", ".blend"})
 #: Formats trimesh reads in pure Python, so they work with no system dependency.
 TRIMESH_EXTENSIONS = frozenset({".gltf", ".glb", ".obj", ".stl", ".ply"})
 
-#: Directories to add to the library search path before importing a binding.
-LIBRARY_HINTS = ("/opt/homebrew/lib", "/usr/local/lib", "/opt/local/lib")
+#: Directories to add to the library search path before importing a binding,
+#: per platform. Neither binding looks in any of them on its own.
+#:
+#: Windows carries the longest list because it has no system library directory
+#: to fall back on and no package manager entry for assimp: the three routes
+#: that work - vcpkg, conda-forge, and the official installer - each drop the
+#: DLL somewhere different, and none of them is on ``PATH`` afterwards. The
+#: fallback for anything not covered is ``assimp_lib_path`` in config.
+PLATFORM_LIBRARY_HINTS: dict[str, tuple[str, ...]] = {
+    "darwin": ("/opt/homebrew/lib", "/usr/local/lib", "/opt/local/lib"),
+    "linux": ("/usr/lib", "/usr/local/lib", "/usr/lib/x86_64-linux-gnu"),
+    "win32": (
+        r"C:\Program Files\Assimp\bin\x64",
+        r"C:\vcpkg\installed\x64-windows\bin",
+        r"C:\tools\vcpkg\installed\x64-windows\bin",
+        str(Path(sys.prefix) / "Library" / "bin"),  # conda-forge
+    ),
+}
 
 #: Suffixes a pack's supplied preview tends to carry beyond the bare stem.
 PREVIEW_SUFFIXES = ("", "_preview", "_thumb", "_thumbnail", "_icon", "-preview")
@@ -365,22 +383,45 @@ def _assimp_backend(lib_path: str | None):
     return None
 
 
-def _extend_library_path(lib_path: str | None) -> None:
-    """Point the bindings at Homebrew, and at whatever config says.
+def library_hints(lib_path: str | None = None, platform: str | None = None) -> list[str]:
+    """Directories to look in for the native library, most specific first.
 
-    Both bindings read ``LD_LIBRARY_PATH`` when building their search list, and
-    neither looks in ``/opt/homebrew/lib``. Writing to the environment is
-    unlovely, but it is the only hook either one offers, and it has to happen
-    before the import that triggers the search.
+    ``assimp_lib_path`` from config leads, and it is accepted as either the
+    library file or the folder holding it - a config key whose value is a path
+    to a ``.dll`` gets pointed at from a README, and being strict about which of
+    the two was meant would only produce a silent miss.
+
+    A relative path in the example so it reads the same on both machines: a
+    separator renders as ``/`` on one and ``\\`` on the other, and a hint list
+    that only matches on the platform it was written on is the bug this whole
+    table exists to avoid.
+
+    >>> library_hints(platform="darwin")[0]
+    '/opt/homebrew/lib'
+    >>> library_hints(str(Path("lib") / "libassimp.dylib"), platform="darwin")[0]
+    'lib'
+    >>> library_hints(platform="win32")[0].endswith("x64")
+    True
     """
-    hints = list(LIBRARY_HINTS)
+    hints = list(PLATFORM_LIBRARY_HINTS[desktop.platform_key(platform)])
     if lib_path:
         candidate = Path(lib_path)
         hints.insert(0, str(candidate if candidate.is_dir() else candidate.parent))
+    return hints
 
-    existing = [p for p in os.environ.get("LD_LIBRARY_PATH", "").split(":") if p]
-    merged = list(dict.fromkeys(hints + existing))
-    os.environ["LD_LIBRARY_PATH"] = ":".join(merged)
+
+def _extend_library_path(lib_path: str | None) -> None:
+    """Point the bindings at the usual install locations, and at config's.
+
+    Writing to the environment is unlovely, but it is the only hook either
+    binding offers and it has to happen before the import that triggers their
+    search. Which variable to write is not the same everywhere, and that is not
+    cosmetic: impasse reads ``LD_LIBRARY_PATH`` on POSIX and ``PATH`` on
+    Windows, so writing the POSIX one on Windows leaves ``assimp.dll`` sitting
+    on disk while the tool reports FBX unreadable, with nothing logged anywhere
+    to say why.
+    """
+    desktop.extend_library_search_path(library_hints(lib_path))
 
 
 class _null_context:

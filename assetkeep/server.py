@@ -38,6 +38,7 @@ from . import (
     collection as collection_module,
     config as config_module,
     db,
+    desktop,
     export as export_module,
     job,
     reference as reference_module,
@@ -286,6 +287,12 @@ def create_app(config: Config) -> FastAPI:
             "copy_target": str(config.copy_target) if config.copy_target else None,
             "thumb_max_edge": config.thumbnails.max_edge,
             "vault_path": str(config.vault_path),
+            # The frontend is served from the same machine it is telling you
+            # about, so the install advice can be that machine's rather than a
+            # generic "install ffmpeg somehow". A UI that says `brew install`
+            # on Windows is worse than one that says nothing.
+            "platform": desktop.platform_key(),
+            "install_hints": desktop.install_hints(),
         }
 
     # --- browsing -----------------------------------------------------------
@@ -564,9 +571,7 @@ def create_app(config: Config) -> FastAPI:
         source = _present_path(conn, asset_id)
         if source is None:
             raise HTTPException(404, "no present file for this asset")
-        if sys.platform != "darwin":
-            raise HTTPException(501, "reveal is macOS only")
-        subprocess.run(["open", "-R", str(source)], check=False)
+        desktop.reveal(source)
         return {"revealed": str(source)}
 
     @app.post("/api/assets/copy")

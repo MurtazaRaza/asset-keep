@@ -1,5 +1,11 @@
 # Copy to ~/.config/assetkeep/config.toml, or let `assetkeep root add` write it.
 # Every key here is shown at its default; all of them can be omitted.
+#
+# ~ expands to your home folder on every platform, so C:\Users\you\.config\assetkeep
+# is where this lives on Windows. Write Windows paths with forward slashes -
+# "C:/Users/you/Projects" - because a backslash starts an escape sequence in TOML
+# and "C:\Users\..." is not a valid string. Anything this tool writes back is
+# already in that form.
 
 [general]
 db_path     = "~/AssetKeep/index.db"     # derived and disposable, safe to delete
@@ -16,8 +22,12 @@ models_path = "~/AssetKeep/models"       # downloaded CLIP weights
 missing_policy = "keep"
 
 # Only needed if neither impasse nor pyassimp can find libassimp on their own.
-# /opt/homebrew/lib is already searched, so a `brew install assimp` needs nothing here.
+# The usual install locations for the platform are searched already, so a
+# `brew install assimp` needs nothing here. Windows usually does need it, since
+# there is no standard place for the DLL to land - point this at the file or at
+# the folder holding it, either works.
 # assimp_lib_path = "/opt/homebrew/lib/libassimp.dylib"
+# assimp_lib_path = "C:/vcpkg/installed/x64-windows/bin/assimp-vc143-mt.dll"
 
 [thumbnails]
 max_edge     = 256

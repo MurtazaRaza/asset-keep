@@ -285,7 +285,8 @@ def _write_manifest(
             },
             indent=2,
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     return path
 
@@ -348,7 +349,12 @@ def _write_credits(destination: Path, entries: list[dict], title: str) -> Path:
         lines.append("")
 
     path = destination / CREDITS_NAME
-    path.write_text("\n".join(lines))
+    # Explicit UTF-8 rather than the platform default, which on Windows is
+    # cp1252 and cannot encode most of what is in this file: an artist called
+    # Bögel, a licence line with a © in it, a title pasted from a store page.
+    # The failure is a UnicodeEncodeError at the end of an export that has
+    # already copied every file.
+    path.write_text("\n".join(lines), encoding="utf-8")
     return path
 
 

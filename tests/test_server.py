@@ -38,10 +38,46 @@ def client(tmp_path):
         yield test_client
 
 
+def test_the_server_creates_the_index_it_is_pointed_at(tmp_path):
+    """A first `serve` on a machine with no index yet has to work.
+
+    Every other fixture here connects once on the main thread before the app
+    starts, which hides the case this covers: with nothing on disk, the worker
+    thread and the first request both open an empty database, both read
+    user_version 0, and both run migration 1 - the loser dying on "table root
+    already exists". It is the shape of a fresh clone, so it is the shape the
+    next machine sees first.
+    """
+    config = Config(
+        db_path=tmp_path / "index.db",
+        thumbs_path=tmp_path / "thumbs",
+        vault_path=tmp_path / "vault",
+        source_path=tmp_path / "config.toml",
+    )
+    assert not config.db_path.exists()
+
+    with TestClient(create_app(config)) as fresh:
+        assert fresh.get("/api/capabilities").status_code == 200
+        assert fresh.get("/api/assets").status_code == 200
+
+    assert config.db_path.exists()
+
+
 def test_capabilities_reports_what_is_installed(client):
     payload = client.get("/api/capabilities").json()
     assert set(payload) >= {"trimesh", "assimp", "ffprobe", "ffmpeg", "clip"}
     assert isinstance(payload["clip"], bool)
+
+
+def test_capabilities_carries_this_machines_install_commands(client):
+    """The UI cannot know which platform the index is on; the server can.
+
+    Without this the sidebar told a Windows user to run `brew install ffmpeg`.
+    """
+    payload = client.get("/api/capabilities").json()
+    assert payload["platform"] in ("darwin", "win32", "linux")
+    assert payload["install_hints"]["ffmpeg"]
+    assert payload["install_hints"]["assimp"]
 
 
 def test_capabilities_separates_the_model_from_the_embeddings(client):
@@ -474,7 +510,9 @@ def test_a_collection_exports_into_a_project_folder(client, tmp_path):
 
     assert len(result["copied"]) == 3
     assert (destination / "jam" / "CREDITS.md").exists()
-    assert result["destination"].endswith("/jam")
+    # Compared as a path rather than by string suffix: the separator differs
+    # between the two machines this suite runs on.
+    assert Path(result["destination"]) == destination / "jam"
 
 
 def test_exporting_with_no_destination_is_a_400(client):

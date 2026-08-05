@@ -27,11 +27,12 @@ index is a file you cannot see inside. Extraction is deliberately narrow - see
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import sqlite3
 import zipfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import config as config_module, db, hashing, roots as roots_module, scan
 from .config import Config, RootConfig
@@ -40,6 +41,11 @@ from .tagging import vocab
 log = logging.getLogger(__name__)
 
 ARCHIVE_SUFFIXES = frozenset({".zip"})
+
+#: A leading component Windows reads as a drive rather than as a folder name.
+#: Only dangerous in first position, which is exactly where an archive has to
+#: put it for the join to escape.
+_DRIVE = re.compile(r"^[A-Za-z]:")
 
 #: Where a drop with no name of its own lands. A dated folder was the other
 #: candidate and reads worse as a tag, which is what a vault folder name becomes.
@@ -174,8 +180,58 @@ def import_upload(
     return result
 
 
+def _components(name: str) -> tuple[str, ...]:
+    r"""``name`` split into path components, parsed as POSIX on every platform.
+
+    The local :class:`~pathlib.Path` is the wrong tool here, and quietly so.
+    A member named ``C:/Windows/x.png`` splits into three ordinary-looking
+    components on macOS and into a *drive* plus two on Windows - and joining a
+    drive onto the vault path does not extend it, it replaces it. So an archive
+    that is inert on the machine this was written on writes into ``C:\Windows``
+    on the machine it is going to, having passed the same check. A leading
+    backslash is the same trap: POSIX ``Path`` does not see it as a separator
+    at all, so it survives the split and re-anchors the join on Windows.
+
+    Parsing as POSIX everywhere makes the answer a property of the name rather
+    than of the machine reading it, which is the only version of this that can
+    be tested on one platform and relied on from another.
+
+    >>> _components("Pack/Tiles/x.png")
+    ('Pack', 'Tiles', 'x.png')
+    >>> _components("C:/Windows/x.png")
+    ('C:', 'Windows', 'x.png')
+    >>> _components(r"\Windows\x.png")
+    ('/', 'Windows', 'x.png')
+    """
+    return PurePosixPath(name.replace("\\", "/")).parts
+
+
+def _escapes(parts) -> bool:
+    r"""Whether joining ``parts`` onto a folder could land outside it.
+
+    >>> _escapes(_components("Pack/Tiles/x.png"))
+    False
+    >>> _escapes(_components("../../.zshrc"))
+    True
+    >>> _escapes(_components("/etc/passwd")), _escapes(_components("C:/x.png"))
+    (True, True)
+    >>> _escapes(_components(r"\Windows\x.png"))
+    True
+    """
+    if not parts:
+        return False
+    if any(part == ".." for part in parts):
+        return True
+    return parts[0] in ("/", "//") or bool(_DRIVE.match(parts[0]))
+
+
 def _safe_relative(name: str) -> str:
-    """Strip an untrusted upload name down to something safe to join onto a path.
+    r"""Strip an untrusted upload name down to something safe to join onto a path.
+
+    Sanitising rather than refusing, unlike :func:`_archive_members`, because a
+    browser is what produced this name: a drop of a folder full of assets that
+    lost one file to a rejected name would be worse than one that lost the odd
+    leading dot.
 
     >>> _safe_relative("Pack/Tiles/x.png")
     'Pack/Tiles/x.png'
@@ -183,12 +239,18 @@ def _safe_relative(name: str) -> str:
     'zshrc'
     >>> _safe_relative("/etc/passwd")
     'etc/passwd'
+    >>> _safe_relative("C:/Windows/System32/x.png")
+    'Windows/System32/x.png'
+    >>> _safe_relative(r"\Windows\x.png")
+    'Windows/x.png'
     """
-    parts = [
-        part
-        for part in Path(name.replace("\\", "/")).parts
-        if part not in ("..", ".", "/") and not part.startswith("/")
-    ]
+    parts = [part for part in _components(name) if part not in ("..", ".")]
+    # Anchors and drives are stripped from the front rather than filtered
+    # throughout: one behind the other ("/C:/x") has to be peeled, and a colon
+    # further in is a legal, if odd, filename that there is no cause to drop.
+    while parts and (parts[0] in ("/", "//") or _DRIVE.match(parts[0])):
+        parts.pop(0)
+
     cleaned = "/".join(part.lstrip(".") or "_" for part in parts)
     return cleaned or "upload"
 
@@ -381,8 +443,8 @@ def _archive_members(archive: zipfile.ZipFile, result: ImportResult):
         if info.is_dir() or not name:
             continue
 
-        parts = Path(name.replace("\\", "/")).parts
-        if any(part in ("..", "/") for part in parts) or name.startswith("/"):
+        parts = _components(name)
+        if _escapes(parts):
             result.skipped.append(f"{name} (unsafe path)")
             continue
         if any(part.startswith(".") or part == "__MACOSX" for part in parts):

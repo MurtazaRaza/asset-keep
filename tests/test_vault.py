@@ -189,6 +189,43 @@ def test_a_zip_slip_member_is_refused(setup, tmp_path):
     assert any("unsafe path" in name for name in result.skipped)
 
 
+def test_a_windows_shaped_zip_slip_member_is_refused(setup, tmp_path):
+    r"""A drive letter and a leading backslash escape too, and only on Windows.
+
+    Both of these pass the naive check on macOS - ``C:/Windows/x.png`` is three
+    ordinary components there, and ``\Windows\x.png`` is a single filename -
+    while on Windows joining either onto the vault path *replaces* it rather
+    than extending it. Asserted here so the machine that cannot reach the bug
+    is still the machine that catches it.
+    """
+    config, incoming, conn = setup
+    archive = tmp_path / "evil-windows.zip"
+    with zipfile.ZipFile(archive, "w") as out:
+        out.writestr("C:/Windows/System32/escaped.png", b"not really a png")
+        out.writestr("\\Windows\\escaped.png", b"nor this")
+
+    result = vault.import_paths(conn, config, [archive])
+
+    assert not result.imported
+    assert len(result.skipped) == 2
+    assert all("unsafe path" in name for name in result.skipped)
+
+
+def test_an_upload_named_with_a_drive_letter_stays_in_the_vault(setup):
+    """The upload path sanitises rather than refuses, so it must strip the drive."""
+    config, incoming, conn = setup
+    result = vault.import_upload(
+        conn, config, "C:/Windows/System32/hero.png", incoming / "TinyPack/hero.png"
+    )
+
+    assert len(result.imported) == 1
+    landed = list(config.vault_path.rglob("hero.png"))
+    assert landed
+    for path in landed:
+        assert config.vault_path in path.parents
+    assert not list(config.vault_path.rglob("C:"))
+
+
 def test_a_nested_archive_is_not_recursed_into(setup, tmp_path):
     config, incoming, conn = setup
     inner = zip_of(incoming / "TinyPack", tmp_path / "inner.zip")

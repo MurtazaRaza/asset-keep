@@ -324,8 +324,12 @@ function renderCapabilities() {
   elements.capabilities.textContent = missing.length
     ? `no ${missing.join(", ")}`
     : "";
+  // The install commands come from the server, because the server is the
+  // machine the dependency is missing on and the command differs per platform.
+  // One line per tool: on Windows they are not the same line.
+  const hints = state.capabilities.install_hints || {};
   elements.capabilities.title = missing.length
-    ? `Install with: brew install ${missing.join(" ")}`
+    ? missing.map((tool) => hints[tool] || `install ${tool}`).join("\n")
     : "";
 
   // The search box says what it can do. Whether typing a description works is

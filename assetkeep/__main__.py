@@ -20,10 +20,12 @@ from . import (
     collection as collection_module,
     config as config_module,
     db,
+    desktop,
     export as export_module,
     reference as reference_module,
     scan as scan_module,
     search,
+    thumbs,
     vault,
     vectors,
 )
@@ -1059,8 +1061,11 @@ def _capabilities(args, cfg) -> int:
     captions = vlm.status(cfg)
     print(f"trimesh   {'yes' if model['trimesh'] else 'no'}   GLTF/GLB/OBJ/STL/PLY")
     print(f"assimp    {model['assimp'] or 'no'}    FBX/DAE/BLEND"
-          + ("" if model["assimp"] else "   (brew install assimp)"))
+          + ("" if model["assimp"] else _hint("assimp")))
     print(f"ffprobe   {'yes' if audio.available() else 'no'}   OGG/MP3/FLAC/AIFF")
+    print(f"ffmpeg    {'yes' if thumbs.available() else 'no'}   "
+          "waveforms, levels, EXR"
+          + ("" if thumbs.available() else _hint("ffmpeg")))
     print(f"clip      {'yes' if semantic['available'] else 'no'}   "
           f"{semantic['model']}"
           + ("" if semantic["available"] else "   (assetkeep model status)"))
@@ -1068,6 +1073,16 @@ def _capabilities(args, cfg) -> int:
           f"{captions['model']}"
           + ("" if captions["available"] else "   (assetkeep vlm status)"))
     return 0
+
+
+def _hint(tool: str) -> str:
+    """The parenthesised install command beside an absent capability.
+
+    >>> _hint("nothing-installs-this")
+    ''
+    """
+    command = desktop.install_hint(tool)
+    return f"   ({command})" if command else ""
 
 
 def _megabytes(count: int) -> str:

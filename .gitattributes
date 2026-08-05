@@ -1,0 +1,32 @@
+# One line ending in the repository, whatever the machine is.
+#
+# This is checked in because the project is now worked on from both macOS and
+# Windows, and git's Windows default (core.autocrlf=true) would otherwise
+# rewrite every file on checkout: the next commit from that machine shows every
+# line of every file as changed, and a diff between the two machines becomes
+# unreadable. Declaring it here settles it for both clones without either one
+# needing local config.
+* text=auto eol=lf
+
+# Binary, so git never tries to translate anything inside them.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.gif   binary
+*.bmp   binary
+*.tga   binary
+*.exr   binary
+*.psd   binary
+*.fbx   binary
+*.glb   binary
+*.blend binary
+*.wav   binary
+*.ogg   binary
+*.mp3   binary
+*.flac  binary
+*.db    binary
+*.onnx  binary
+
+# Generated, and large. Collapsed in diffs and reviews rather than scrolled past.
+uv.lock linguist-generated=true
