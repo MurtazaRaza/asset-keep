@@ -4,6 +4,7 @@
 
 import { state, setCursor } from "./state.js";
 import * as api from "./api.js";
+import * as audition from "./audition.js";
 import { isPixelArt, filename } from "./grid.js";
 
 const FRAME_MS = 120;
@@ -46,6 +47,10 @@ export function show() {
   if (!asset) return;
 
   stopAnimation();
+  // Two players, one pair of ears. Quick Look's own element takes over from the
+  // grid audition rather than layering over it, which is what happens if you
+  // press `p` and then space on the same sound.
+  audition.stop();
   stage.replaceChildren();
   titleEl.textContent = filename(asset);
   metaEl.textContent = describe(asset);
@@ -103,21 +108,60 @@ function stillImage(asset) {
   return image;
 }
 
+// The waveform, wide, with a playhead crossing it and a click anywhere on it
+// seeking there.
+//
+// The tile is square because the grid's cells are, and a waveform is the one
+// thumbnail in this tool whose shape is not the shape of the thing: stretched
+// to the width of the screen it becomes what a waveform is supposed to be, a
+// picture of a sound over time. Which then makes it a scrubbing surface for
+// free, because the horizontal axis already means exactly that. Finding the
+// one loud transient in a nine-second ambience loop is a click on the spike.
 function audioPlayer(asset) {
   const stack = document.createElement("div");
   stack.className = "stack";
 
+  const strip = document.createElement("div");
+  strip.className = "waveform";
+
   const waveform = document.createElement("img");
   waveform.src = api.thumbUrl(asset);
   waveform.alt = "";
-  waveform.addEventListener("error", () => waveform.remove(), { once: true });
+  waveform.addEventListener("error", () => strip.classList.add("nowave"), {
+    once: true,
+  });
+
+  const head = document.createElement("div");
+  head.className = "playhead";
+  head.hidden = true;
+
+  strip.append(waveform, head);
 
   const player = document.createElement("audio");
   player.controls = true;
   player.autoplay = true;
   player.src = api.fileUrl(asset);
 
-  stack.append(waveform, player);
+  // `duration` is NaN until metadata arrives, and dividing by it paints the
+  // playhead at `NaN%`, which CSS drops silently and which then looks like a
+  // playhead that simply does not work.
+  const progress = () => {
+    if (!player.duration || !Number.isFinite(player.duration)) return;
+    head.hidden = false;
+    head.style.left = `${(player.currentTime / player.duration) * 100}%`;
+  };
+  player.addEventListener("timeupdate", progress);
+  player.addEventListener("loadedmetadata", progress);
+
+  strip.addEventListener("click", (event) => {
+    if (!player.duration || !Number.isFinite(player.duration)) return;
+    const box = strip.getBoundingClientRect();
+    const fraction = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
+    player.currentTime = fraction * player.duration;
+    progress();
+  });
+
+  stack.append(strip, player);
   return stack;
 }
 
@@ -179,8 +223,25 @@ function describe(asset) {
   if (a.cols && a.rows) bits.push(`${a.cols | 0}x${a.rows | 0} sheet`);
   if (a.triangles) bits.push(`${(a.triangles | 0).toLocaleString()} tris`);
   if (a.duration) bits.push(`${Number(a.duration).toFixed(2)}s`);
+  if (asset.kind === "audio") bits.push(...audioFacts(a));
   if (a.bytes) bits.push(formatBytes(a.bytes));
   return bits.join("  ·  ");
+}
+
+// Format and level, in the order the questions get asked. Shared with the
+// inspector, because the two were already showing the same duration in the
+// same format and would have drifted the moment one of them grew a field.
+export function audioFacts(a) {
+  const bits = [];
+  if (a.sample_rate) bits.push(`${(a.sample_rate / 1000).toFixed(1)} kHz`);
+  if (a.channels) bits.push(a.channels === 1 ? "mono" : `${a.channels | 0} ch`);
+  if (a.bit_depth) bits.push(`${a.bit_depth | 0}-bit`);
+  // Only for the codecs where depth does not apply, so that a WAV does not
+  // report both and say the same thing twice.
+  else if (a.bitrate) bits.push(`${Math.round(a.bitrate / 1000)} kbps`);
+  if (a.codec) bits.push(a.codec);
+  if (typeof a.peak_db === "number") bits.push(`peak ${a.peak_db.toFixed(1)} dB`);
+  return bits;
 }
 
 export function formatBytes(bytes) {

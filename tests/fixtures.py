@@ -161,3 +161,88 @@ def write(image: Image.Image, path) -> "Path":  # noqa: F821 - typing only
     """Save a fixture where a probe can open it, and return the path."""
     image.save(path)
     return path
+
+
+# --- audio ------------------------------------------------------------------
+#
+# Real WAV files through the stdlib `wave` module, which is the same path the
+# probe takes for them, so these exercise the parser rather than a mock of it.
+# No ffmpeg anywhere: the header fields come out of the file, and everything
+# that needs decoded samples - loudness, waveforms - is tested against arrays
+# built here directly. A suite that needs a codec installed is a suite that
+# passes on one machine.
+
+
+def samples(
+    seconds: float = 1.0,
+    rate: int = 44100,
+    frequency: float = 440.0,
+    amplitude: float = 0.8,
+) -> np.ndarray:
+    """A sine at a given level, as float in the signed 16-bit range.
+
+    Amplitude is a fraction of full scale, so ``0.5`` is -6 dBFS and ``1.0``
+    clips. Being able to say "-6 dB" in a test is the whole point of the
+    parameter: every loudness assertion in the suite is written that way.
+    """
+    count = max(1, int(seconds * rate))
+    axis = np.arange(count) / rate
+    return np.sin(2 * np.pi * frequency * axis) * amplitude * 32767.0
+
+
+def wav(
+    path,
+    seconds: float = 1.0,
+    rate: int = 44100,
+    channels: int = 1,
+    depth: int = 16,
+    amplitude: float = 0.8,
+):
+    """Write a real WAV the stdlib can read back, and return the path."""
+    import wave
+
+    mono = samples(seconds, rate, amplitude=amplitude).astype(np.int16)
+    frames = np.repeat(mono[:, None], channels, axis=1).ravel()
+
+    if depth == 8:
+        # 8-bit WAV is unsigned by definition, which is the one place the
+        # format is not just "narrower integers".
+        payload = ((frames >> 8) + 128).astype(np.uint8).tobytes()
+    elif depth == 24:
+        wide = (frames.astype(np.int32) << 8)
+        payload = wide.astype("<i4").tobytes()
+        payload = b"".join(
+            payload[i : i + 3] for i in range(0, len(payload), 4)
+        )
+    else:
+        payload = frames.astype("<i2").tobytes()
+
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(channels)
+        handle.setsampwidth(depth // 8)
+        handle.setframerate(rate)
+        handle.writeframes(payload)
+    return path
+
+
+def silent_wav(path, seconds: float = 1.0, rate: int = 44100):
+    """Digital silence: the near miss for "quiet", and a real broken export."""
+    import wave
+
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(np.zeros(int(seconds * rate), dtype="<i2").tobytes())
+    return path
+
+
+def dc_offset_samples(count: int = 8000) -> np.ndarray:
+    """Every sample pinned to full negative scale.
+
+    Not a synthetic curiosity: this is ``LoftDrop.wav`` from the TopDownEngine
+    demo, 30 KB of constant -32768, found by the M6 calibration run. It is the
+    case that separates "peak is full scale" from "there is a sound here", and
+    the reason the tile draws it as a solid clipped block.
+    """
+    return np.full(count, -32768.0, dtype=np.float32)

@@ -192,12 +192,24 @@ these constantly and a supplied preview beats a flat-shaded one.
 
 ## Audio
 
-Structural metadata only, no waveform analysis or fingerprinting: duration, sample rate,
-channels and bit depth. WAV parses through the stdlib `wave` module. OGG and anything
-else goes through the already-installed `ffprobe`.
+Structural metadata, no fingerprinting and no BPM detection: duration, sample rate,
+channels, bit depth and codec. WAV parses through the stdlib `wave` module. OGG and
+anything else goes through the already-installed `ffprobe`.
+
+One number is measured rather than parsed: **loudness**, as peak and RMS in dBFS. It
+costs a decode, and it earns it by answering the question no header field can - why one
+sound effect is so much quieter than the rest of the pack, and which files are clipping.
 
 Thumbnails are rendered waveform peaks, which makes an audio file recognisable in a grid
-built for images, with inline playback in Quick Look.
+built for images. They are drawn at absolute scale rather than peak-normalised, so that
+a wall of them compares files rather than showing each one in isolation, with amplitude
+square-rooted so a quiet file is still a shape and not an empty box. Columns that reach
+full scale are drawn in a warning colour.
+
+Playback is a mode rather than a modal: `p` auditions the sound under the cursor and
+keeps following the cursor as it moves, because browsing sound effects means hearing a
+hundred of them in a row. Quick Look stretches the waveform wide, puts a playhead on it,
+and seeks where you click.
 
 ## Thumbnails
 
@@ -362,7 +374,14 @@ tagging, similarity upgraded from visual to semantic.
 **M5 - References and export.** URL assets with metadata fetch, export bundles, copy a
 collection into a Unity project, optional VLM captions.
 
-**Later.** Obsidian bridge, sync, audio.
+**M6 - Audio, properly.** Audio was indexed from M1 and never finished: the fields were
+probed and shown nowhere, the waveform was drawn in a way that threw the interesting
+information away, and the only way to hear anything was a fullscreen modal. So: loudness
+measured and made searchable, waveforms that show how loud a file is and mark the ones
+that clip, `rate:` / `channels:` / `depth:` / `peak:` filters, audition from the grid, a
+wide scrubbable waveform in Quick Look, and the first tests audio has ever had.
+
+**Later.** Obsidian bridge, sync.
 
 ## Deferred, with reasons
 

@@ -1117,7 +1117,7 @@ def _summary(conn, asset) -> str:
     values = dict(
         conn.execute(
             "SELECT key, value_num FROM attribute WHERE asset_id = ? "
-            "AND key IN ('width','height','triangles','duration')",
+            "AND key IN ('width','height','triangles','duration','channels','peak_db')",
             (asset["id"],),
         ).fetchall()
     )
@@ -1126,7 +1126,16 @@ def _summary(conn, asset) -> str:
     if asset["kind"] == "model3d" and "triangles" in values:
         return f"{_clean(values['triangles'])} tris"
     if asset["kind"] == "audio" and "duration" in values:
-        return f"{values['duration']:.1f}s"
+        # Mono against stereo, and the level, because those are the two things
+        # a list of sound effects is usually being scanned for.
+        bits = [f"{values['duration']:.1f}s"]
+        if values.get("channels"):
+            bits.append("mono" if values["channels"] == 1 else "stereo")
+        if "peak_db" in values:
+            # `+ 0.0` because -0.04 dB formats as "-0dB", which reads as a
+            # different number from the "0dB" beside it and is the same one.
+            bits.append(f"{round(values['peak_db']) + 0.0:.0f}dB")
+        return " ".join(bits)
     return ""
 
 

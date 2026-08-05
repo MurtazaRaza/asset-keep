@@ -259,6 +259,30 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .cell.missing { opacity: .45; }
 .cell.missing .badge { background: var(--danger); color: #fff; }
 
+/* Audition: a play button on hover, and a border on whatever is sounding.
+   The button appears on hover only, because at 96px a permanent one covers a
+   sixth of the tile it is supposed to be letting you look at. */
+.cell .playbutton {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 30px; height: 30px;
+  padding: 0 0 0 2px;
+  border: 0;
+  border-radius: 50%;
+  background: #000b;
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .1s;
+}
+.cell:hover .playbutton, .cell.playing .playbutton { opacity: 1; }
+.cell .playbutton:hover { background: var(--accent); }
+.cell.playing { border-color: var(--accent); }
+.cell.playing .playbutton { background: var(--accent); }
+
 /* --- status bar --- */
 
 #statusbar {
@@ -305,6 +329,36 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 #ql-stage img.pixelated { image-rendering: pixelated; }
 #ql-stage audio { width: min(560px, 80vw); }
 #ql-stage .stack { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+
+/* The square waveform tile, stretched wide: see the comment in quicklook.js.
+   `object-fit: fill` rather than `contain`, because distorting a waveform
+   horizontally is not a distortion - the axis is time, and making it longer is
+   what a wider window is for. */
+#ql-stage .waveform {
+  position: relative;
+  width: min(720px, 80vw);
+  height: 200px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  background: #181a20;
+}
+#ql-stage .waveform img {
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  display: block;
+}
+#ql-stage .waveform.nowave { height: 0; }
+#ql-stage .waveform .playhead {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+  box-shadow: 0 0 6px #fff8;
+  pointer-events: none;
+}
 
 /* A detected spritesheet plays its frames rather than showing the sheet: the
    sheet is what the file looks like, the animation is what it is. */

@@ -7,6 +7,7 @@
 
 import { state, select, setCursor, loadMore } from "./state.js";
 import * as api from "./api.js";
+import * as audition from "./audition.js";
 
 const GAP = 8;
 const PADDING = 12;
@@ -138,6 +139,23 @@ function build(index) {
     element.appendChild(badge);
   }
 
+  // A play button on the tile itself, for the same reason `p` exists: the
+  // waveform is the only thumbnail in the grid that is a picture of something
+  // you are meant to hear, and clicking it is the obvious thing to try.
+  if (asset.kind === "audio" && asset.present) {
+    const play = document.createElement("button");
+    play.className = "playbutton";
+    play.title = "Audition (p)";
+    play.textContent = "▶";
+    play.addEventListener("mousedown", (event) => event.stopPropagation());
+    play.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setCursor(index);
+      audition.toggle(asset);
+    });
+    element.appendChild(play);
+  }
+
   const label = document.createElement("div");
   label.className = "label";
   label.innerHTML = `<b></b><span></span>`;
@@ -179,6 +197,7 @@ function applyStateClasses(element, index) {
   element.classList.toggle("selected", state.selection.has(asset.id));
   element.classList.toggle("cursor", state.cursor === index);
   element.classList.toggle("missing", !asset.present);
+  element.classList.toggle("playing", audition.playingId() === asset.id);
 }
 
 export function isPixelArt(asset) {

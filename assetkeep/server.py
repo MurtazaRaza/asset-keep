@@ -1217,6 +1217,11 @@ GRID_ATTRIBUTES = (
     # A reference's shape line is its host, which is the one thing about a link
     # worth reading at thumbnail size.
     "host",
+    # Audio. The inspector reads all of these; the grid reads none of them, but
+    # they arrive on the same query the grid already makes, and the inspector
+    # showing a file's format without a second round trip is worth six columns.
+    "sample_rate", "channels", "bit_depth", "bitrate", "codec",
+    "peak_db", "rms_db",
 )
 
 

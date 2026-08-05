@@ -35,11 +35,17 @@ Captions need no extra at all: that tier talks to a local ollama over HTTP, and
 `httpx` is already a base dependency.
 
 Two optional system dependencies, both detected at runtime and both reported by
-`assetkeep capabilities`:
+`assetkeep capabilities`, which also prints the install command for the machine
+it is running on:
 
 ```bash
-brew install assimp          # FBX, DAE and BLEND parsing
-brew install ffmpeg          # OGG, MP3, FLAC and AIFF metadata
+brew install assimp          # macOS: FBX, DAE and BLEND parsing
+brew install ffmpeg          # macOS: OGG, MP3, FLAC and AIFF metadata
+```
+
+```powershell
+winget install Gyan.FFmpeg   # Windows: same, and the waveform tiles
+vcpkg install assimp         # Windows: see the Windows section below
 ```
 
 Without assimp, FBX files are still indexed, hashed, tagged and searchable; only
@@ -244,11 +250,19 @@ tag:tileset  -tag:wip      include / exclude
 kind:image | model3d | audio | reference
 license:cc0  source:kenney  root:prototype  collection:jam
 w:>=512  h:<64  size:>1mb  tris:<5000  dur:<2s
+rate:>48000  channels:1  depth:24  bitrate:>192kbps  peak:>-6db  rms:<-30db
 has:alpha | animation | rig | caption | license
-is:managed | missing | untagged | vendor
+is:managed | missing | untagged | vendor | clipping | silent | mono | stereo
 similar:1234               CLIP neighbours, or perceptual-hash ones
 sort:added | name | size | relevance
 ```
+
+The audio filters answer questions a Unity project actually asks. `is:stereo
+dur:<2s` is every sound effect that cannot be positioned in 3D without Force To
+Mono, which in the calibration library is 102 of 175 files. `rate:>48000` finds
+bytes spent on bandwidth nothing will hear. `is:clipping` finds the 18 files
+that touch full scale, one of which turned out to be 30 KB of constant DC that
+had been shipping in a demo scene.
 
 Unknown prefixes are searched as words rather than rejected, so a mistyped
 filter still returns something.
@@ -264,27 +278,37 @@ Browsing-first, so navigation never needs the mouse.
 
 ```
 /       focus search          s       find similar to selection
-arrows  move in grid          r       reveal in Finder, or open a link
+arrows  move in grid          r       reveal in the file manager, or open a link
 space   quick look            c       copy to destination
 enter   inspector             C       copy path to clipboard
 i       inspector             a       select all
 esc     unwind one layer      d       describe with the vision model
 [       toggle sidebar        +/-     thumbnail size
+p       audition audio
 ```
 
+`p` starts auditioning the sound under the cursor, and keeps going: while it is
+on, moving the cursor plays whatever it lands on, so arrowing along a row of
+footsteps plays them in turn. It ends on `p` again, on Escape, or on reaching
+anything that is not audio. Quick Look can play a sound too, but it is the wrong
+tool for going through a hundred of them - that is three keystrokes and a screen
+flash per file.
+
 Escape unwinds exactly one layer per press: the field, then Quick Look, then the
-inspector, then the selection. Closing all of them at once is how you lose a
-selection that took a minute to build because a preview happened to be open.
+audition, then the inspector, then the selection. Closing all of them at once is
+how you lose a selection that took a minute to build because a preview happened
+to be open.
 
 Clicking a sidebar tag adds `tag:x` to the query; right-clicking adds `-tag:x`.
 Every active filter is a removable chip, and the query string is the only state
 there is, so the URL is shareable and the back button works.
 
-Getting assets out: **Reveal in Finder** always works, **Copy to destination**
-remembers the last folder, **Copy path** goes to the clipboard, **Export** on a
-collection row writes the whole set plus its credits into a project, and
-**drag-out** works in Chromium only (it needs the `DownloadURL` drag type),
-which is why it is a bonus on top of the others rather than the primary path.
+Getting assets out: **Reveal** always works - Finder, Explorer or whatever file
+manager you have - **Copy to destination** remembers the last folder, **Copy
+path** goes to the clipboard, **Export** on a collection row writes the whole
+set plus its credits into a project, and **drag-out** works in Chromium only (it
+needs the `DownloadURL` drag type), which is why it is a bonus on top of the
+others rather than the primary path.
 
 ## Configuration
 
@@ -295,6 +319,61 @@ Roots live in this file rather than only in the database, because the database
 is derived and disposable: deleting `~/AssetKeep/index.db` and rescanning is a
 supported recovery path, and the list of folders to scan could not be rebuilt
 from anything if it lived only there.
+
+`~` is the home folder on every platform, so on Windows the config is at
+`C:\Users\you\.config\assetkeep\config.toml` and the index at
+`C:\Users\you\AssetKeep\index.db`. Write paths in the file with forward slashes -
+`"C:/Users/you/Projects"` - because a backslash starts an escape sequence in
+TOML and `"C:\Users\..."` is not a valid string. Everything the tool writes back
+is already in that form.
+
+## Windows
+
+The tool runs the same on macOS, Windows and Linux. Four things differ, and all
+four are things the platform decides rather than choices made here.
+
+**ffmpeg** is `winget install Gyan.FFmpeg`, and it is what audio metadata beyond
+WAV, the waveform tiles, the loudness numbers and EXR decoding all need. Open a
+new terminal afterwards so the new `PATH` is picked up, then check with
+`uv run assetkeep capabilities`.
+
+**assimp** has no package manager entry, which is the only genuinely awkward
+part. Three routes work: `vcpkg install assimp`, `conda install -c conda-forge
+assimp`, or the installer from the
+[assimp releases page](https://github.com/assimp/assimp/releases). All three end
+with a DLL - typically `assimp-vc143-mt.dll` - and the usual locations for each
+are searched automatically. If yours landed somewhere else, say so once:
+
+```toml
+[general]
+assimp_lib_path = "C:/vcpkg/installed/x64-windows/bin/assimp-vc143-mt.dll"
+```
+
+Either the file or the folder holding it works. Without assimp, FBX still
+indexes, hashes, tags, thumbnails from a sibling preview and searches - what is
+missing is triangle counts, bounds and the rig flag.
+
+**Long paths.** A Unity project with a deeply nested pack inside it will exceed
+the 260-character limit, and a scan skips what it cannot open rather than
+failing. Turn the limit off once, from an elevated PowerShell:
+
+```powershell
+New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+  -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
+```
+
+**Reveal** opens Explorer with the file selected, the same as Finder on macOS.
+On Linux it opens the containing folder instead: selecting one item is a
+per-file-manager flag, and `xdg-open` on the parent is the thing that works
+everywhere.
+
+Everything else - the vault, drag-and-drop import, the search grammar, CLIP,
+captions through ollama - is unchanged. The one thing worth knowing if you index
+the same library from two machines: CLIP runs on CPU deliberately, including on
+a machine with a GPU that could do it faster, because vectors from two different
+execution providers are not bit-identical and `similar:` compares them directly.
+Embedding 900 assets takes well under a minute either way; a library half
+embedded on CUDA and half on CPU would rank subtly wrongly forever.
 
 ## What gets indexed
 

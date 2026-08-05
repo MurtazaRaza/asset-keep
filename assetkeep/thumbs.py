@@ -38,7 +38,7 @@ from PIL import Image
 
 from . import hashing
 from .config import Config
-from .probe import model3d
+from .probe import audio, model3d
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +71,19 @@ AMBIENT = 0.28
 MODEL_COLOR = (196, 200, 208)
 WAVEFORM_COLOR = (120, 190, 240)
 WAVEFORM_BACKGROUND = (24, 26, 32)
+
+#: Columns that reach full scale are drawn in this instead, so that a clipped
+#: file announces itself in the grid.
+CLIPPING_COLOR = (240, 140, 120)
+
+#: Amplitude at which a column counts as touching full scale, as a fraction of
+#: it. Derived from the same decibel threshold ``is:clipping`` uses rather than
+#: chosen separately: a tile that disagrees with the filter about which of its
+#: files are clipping is worse than one that says nothing, and the first version
+#: of this did exactly that - a hard-coded 0.999 compared against the
+#: square-rooted amplitude, which works out at -0.017 dB against the filter's
+#: -0.1 dB, so every file between the two matched `is:clipping` and drew clean.
+CLIPPING_MAGNITUDE = 10 ** (audio.CLIPPING_DB / 20)
 
 #: Columns in a waveform thumbnail. One per pixel at 256 px wide.
 WAVEFORM_COLUMNS = 256
@@ -379,33 +392,57 @@ def _draw_triangle(
 
 def _audio_thumb(source: Path, box: int) -> Image.Image | None:
     """Waveform peaks, so an audio file is visible in a grid built for images."""
-    samples = _decode_pcm(source)
+    samples = audio.decode_pcm(source)
     if samples is None or samples.size == 0:
         return None
     return render_waveform(samples, box)
 
 
 def render_waveform(samples: np.ndarray, size: int = 256) -> Image.Image:
-    """Draw min/max peaks per column.
+    """Draw min/max peaks per column, at a scale that keeps loudness readable.
 
     Peaks rather than a decimated sample: taking every Nth sample of a waveform
     aliases badly, and a quiet passage next to a loud one comes out looking the
     same. The min and max over each window is what the eye expects to see.
 
+    **Not peak-normalised**, which is the change M6 made and the one worth
+    explaining. Scaling each tile so its own loudest moment fills the frame is
+    what every audio editor does, and it is wrong here: an asset grid is a
+    comparison between files, not a view of one. Measured across 215 real
+    files, peak level spans 67 files within a decibel of full scale and 18 more
+    than 24 dB below it - and normalising drew all 85 of them identically, so
+    the one question a wall of waveforms should be able to answer at a glance,
+    "why is that one so quiet", was the one it could not.
+
+    Amplitude is square-rooted rather than drawn linearly. Linear is honest and
+    useless: at -24 dB a file is 6% of full scale, which is three pixels of a
+    256 px tile and reads as an empty box. The square root is the standard
+    half-decibel compromise - full scale stays full height, -6 dB draws at 71%,
+    -24 dB at 25% - so a quiet file still shows its envelope while still
+    being visibly quiet.
+
     >>> import numpy as np
-    >>> tone = np.sin(np.linspace(0, 400, 44100)) * 0.9
+    >>> tone = np.sin(np.linspace(0, 400, 44100)) * 32768 * 0.9
     >>> render_waveform(tone, 64).size
     (64, 64)
-    """
-    columns = min(WAVEFORM_COLUMNS, size)
-    usable = samples[: samples.size // columns * columns]
-    if usable.size == 0:
-        usable = np.zeros(columns, dtype=samples.dtype)
-    windows = usable.reshape(columns, -1)
 
-    peak = float(np.abs(samples).max()) or 1.0
-    lows = np.clip(windows.min(axis=1) / peak, -1, 1)
-    highs = np.clip(windows.max(axis=1) / peak, -1, 1)
+    A quiet clip draws shorter than a loud one rather than the same height:
+
+    >>> loud = drawn_rows(render_waveform(tone, 64))
+    >>> quiet = drawn_rows(render_waveform(tone / 16, 64))
+    >>> quiet < loud
+    True
+    """
+    columns = max(1, min(WAVEFORM_COLUMNS, size, samples.size))
+    lows, highs = _column_peaks(samples, columns)
+
+    # Measured before the square root, because the threshold is a real
+    # amplitude and the square root is only how it gets drawn.
+    clipping = np.maximum(highs, -lows) >= CLIPPING_MAGNITUDE
+
+    # Square-rooted magnitude, sign preserved: see the docstring.
+    lows = -np.sqrt(np.abs(lows))
+    highs = np.sqrt(highs)
 
     canvas = np.zeros((size, size, 4), dtype=np.uint8)
     canvas[:, :] = (*WAVEFORM_BACKGROUND, 255)
@@ -416,33 +453,48 @@ def render_waveform(samples: np.ndarray, size: int = 256) -> Image.Image:
         right = max(left + 1, int((column + 1) * size / columns))
         top = int(middle - highs[column] * middle * 0.92)
         bottom = int(middle - lows[column] * middle * 0.92)
+        # A column that reaches full scale is drawn in the warning colour, so a
+        # clipped file is recognisable as one from the grid rather than only
+        # from `is:clipping`. 18 of the 175 in the calibration library light up.
         canvas[min(top, bottom) : max(top, bottom) + 1, left:right] = (
-            *WAVEFORM_COLOR,
+            *(CLIPPING_COLOR if clipping[column] else WAVEFORM_COLOR),
             255,
         )
 
     return Image.fromarray(canvas, mode="RGBA")
 
 
-def _decode_pcm(source: Path) -> np.ndarray | None:
-    """Mono 16-bit samples through ffmpeg, at a rate suited to drawing.
+def _column_peaks(samples: np.ndarray, columns: int) -> tuple[np.ndarray, np.ndarray]:
+    """Min and max of each column's window, as a fraction of full scale.
 
-    8 kHz is plenty: the output is 256 columns wide, so even a 30-second track
-    contributes about a thousand samples per column.
+    ``reduceat`` over computed edges rather than a reshape. The reshape it
+    replaces truncated the tail to make the length divide evenly, which is
+    harmless on a music track and destructive on a short one: a clip of 300
+    samples has 256 columns to fill, so it lost a fifth of itself, and anything
+    under 256 samples was dropped entirely and drawn as a flat line.
+
+    >>> import numpy as np
+    >>> lows, highs = _column_peaks(np.array([-32768.0, 32768.0]), 2)
+    >>> [round(float(v), 2) for v in lows], [round(float(v), 2) for v in highs]
+    ([-1.0, 0.0], [0.0, 1.0])
     """
-    if shutil.which("ffmpeg") is None:
-        return None
+    edges = np.linspace(0, samples.size, columns + 1).astype(np.intp)[:-1]
+    scaled = samples / audio.FULL_SCALE
+    lows = np.minimum.reduceat(scaled, edges)
+    highs = np.maximum.reduceat(scaled, edges)
+    return np.clip(lows, -1, 0), np.clip(highs, 0, 1)
 
-    completed = subprocess.run(
-        ["ffmpeg", "-v", "quiet", "-i", str(source),
-         "-f", "s16le", "-ac", "1", "-ar", "8000", "-"],
-        capture_output=True,
-        timeout=FFMPEG_TIMEOUT,
-        check=False,
-    )
-    if completed.returncode != 0 or not completed.stdout:
-        return None
-    return np.frombuffer(completed.stdout, dtype=np.int16).astype(np.float32)
+
+def drawn_rows(image: Image.Image) -> int:
+    """How many rows of a waveform tile have any wave drawn on them.
+
+    A measurement helper rather than part of the pipeline: it is what the
+    doctest above compares, and what the M6 calibration run counted to find the
+    one file in 215 that draws as a single flat row.
+    """
+    array = np.asarray(image.convert("RGB"))
+    drawn = (array != np.array(WAVEFORM_BACKGROUND, dtype=array.dtype)).any(axis=2)
+    return int(drawn.any(axis=1).sum())
 
 
 # --- EXR --------------------------------------------------------------------

@@ -15,6 +15,7 @@ import * as api from "./api.js";
 import * as grid from "./grid.js";
 import { state, selectedAssets, patchAsset, refreshCollections } from "./state.js";
 import { isPixelArt, filename } from "./grid.js";
+import { audioFacts } from "./quicklook.js";
 
 //: Fields the panel writes, and the input each one is bound to.
 const FIELDS = {
@@ -166,6 +167,10 @@ function factsLine(asset) {
   if (a.width && a.height) bits.push(`${a.width | 0} x ${a.height | 0}`);
   if (a.triangles) bits.push(`${(a.triangles | 0).toLocaleString()} tris`);
   if (a.duration) bits.push(`${Number(a.duration).toFixed(2)}s`);
+  // Sample rate, channels, depth and level. Probed since M1 and shown nowhere
+  // until M6, which made "is this one stereo" a question you could only answer
+  // by leaving the tool.
+  if (asset.kind === "audio") bits.push(...audioFacts(a));
   if (a.bytes) bits.push(formatBytes(a.bytes));
   return bits.join("  ·  ");
 }

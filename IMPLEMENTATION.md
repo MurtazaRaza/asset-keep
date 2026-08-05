@@ -347,19 +347,40 @@ Asset packs ship these constantly and a supplied preview beats any render.
 
 ### audio.py
 
-Structural only. No waveform analysis, no fingerprinting, no BPM detection.
+No fingerprinting, no BPM detection.
 
-Attributes: `duration`, `sample_rate`, `channels`, `bit_depth`, `codec`. WAV parses
-through the stdlib `wave` module with no subprocess. Everything else goes through
-`ffprobe -v quiet -print_format json -show_streams`.
+Attributes: `duration`, `sample_rate`, `channels`, `bit_depth`, `bitrate`, `codec`,
+`peak_db`, `rms_db`. WAV parses through the stdlib `wave` module with no subprocess -
+3.1 ms against ffprobe's 26 ms, on 72% of a game project's audio. Everything else goes
+through `ffprobe -v quiet -print_format json -show_streams`.
+
+Bit depth comes from `bits_per_sample`, falling back to `bits_per_raw_sample`. That
+order is the whole of the fix: ffprobe leaves the second unset for 16-bit PCM, and
+reports `0` in the first for lossy codecs, where the concept does not apply and
+`bitrate` is what to record instead.
+
+Loudness is the one field that is measured rather than read: `decode_pcm` pulls mono
+16-bit samples at 8 kHz through ffmpeg, and peak and RMS are taken over them in dBFS
+with a -96 dB floor. It costs 36 ms a file. `is:clipping` is peak at or above -0.1 dB
+and `is:silent` is peak below -40 dB, and both thresholds live here so that the
+waveform tile and the query bar cannot drift apart - which they did, and which no test
+caught, because each half was self-consistent.
 
 Heuristic tags from duration, since it is the one dimension that reliably separates
 categories in a game project: under 2 seconds tags `sfx`, over 30 seconds tags `music`,
 and the range between is left untagged rather than guessed at.
 
-Thumbnails are rendered waveform peaks: decode to mono PCM through ffmpeg, reduce to 256
-min/max pairs with numpy, draw with PIL. Without this an audio file is an invisible row
-in a grid built for images. Quick Look gets an inline `<audio>` element.
+Thumbnails are rendered waveform peaks: `min`/`max` per column via `reduceat` over
+computed edges, drawn at absolute scale with square-rooted amplitude so that loudness
+survives into the grid, and clipped columns in a warning colour. `reduceat` rather than
+a reshape because the reshape truncated the tail to make the length divide evenly, which
+silently dropped a fifth of a 300-sample clip and drew anything under 256 samples as a
+flat line. Without any of this an audio file is an invisible row in a grid built for
+images.
+
+Playback is `web/audition.js` for the grid and an `<audio>` element under a wide
+scrubbable waveform in Quick Look; the two stop each other, since there is one pair of
+ears.
 
 ### reference.py
 
@@ -444,14 +465,27 @@ tag:tileset  -tag:wip      include / exclude
 kind:image | model3d | audio | reference
 license:cc0    source:kenney    root:prototype    collection:jam
 w:>=512  h:<64  size:>1mb  tris:<5000  dur:<2s
+rate:>48000  channels:1  depth:24  bitrate:>192kbps  peak:>-6db  rms:<-30db
 has:alpha | has:animation | has:caption | has:license
 is:managed | is:missing | is:untagged | is:vendor
+is:clipping | is:silent | is:mono | is:stereo
 similar:1234               dHash neighbours, or CLIP neighbours when available
 sort:added | name | size | relevance
 ```
 
 Bare-word results and semantic results merge by normalised score rather than
 concatenating, so a strong semantic hit can outrank a weak literal one.
+
+Two units are not what they look like. `db` is a multiplier of one, present only so
+`peak:>-6db` reads the way it would be said out loud, and decibels are the reason the
+number pattern accepts a leading minus at all - it cannot collide with `-tag:wip`,
+which is stripped from the front of a whole token long before a value is parsed. `kbps`
+is decimal where `kb` is binary, because a 192 kbps file is 192,000 bits per second and
+a threshold that quietly meant 196,608 would exclude the files it was typed to find.
+
+`is:clipping` and `is:mono` are `peak:` and `channels:` underneath and exist anyway.
+The useful queries are the ones nobody phrases as a number: "which of these clips" is
+the question, and `peak:>=-0.1db` is that question asked backwards.
 
 ## HTTP API
 
@@ -469,12 +503,18 @@ GET    /api/thumb/{hash}              webp, or original passthrough when skipped
 GET    /api/file/{id}                 raw bytes, backs drag-out
 POST   /api/assets/{id}/reveal        open Finder at the file
 POST   /api/assets/copy               ids + destination
-GET    /api/roots   POST /api/roots   DELETE /api/roots/{id}
+GET    /api/roots   POST /api/roots   DELETE /api/roots?path=
 POST   /api/scan                      start a scan
 GET    /api/scan/status               SSE progress stream
 GET    /api/collections               POST, PATCH, DELETE
 POST   /api/collections/{id}/assets   DELETE the same path to remove
 POST   /api/import                    multipart upload into the vault
+GET    /api/maintenance               counts that move while a page is open
+POST   /api/model/download            fetch the CLIP weights, progress on the SSE
+POST   /api/vlm/pull                  fetch the caption model through ollama
+POST   /api/embed                     queue embeddings for whatever has none
+POST   /api/thumbs                    queue tiles for whatever should have one
+POST   /api/prune                     dry run unless {"confirm": true}
 ```
 
 Plus four the frontend needed that this list did not anticipate: `/api/assets/count`,
@@ -483,6 +523,24 @@ for autocomplete; `PATCH /api/assets/bulk` for the licence and attribution an im
 pack shares; and `POST /api/assets/summary`, which is what lets bulk mode describe a
 400-asset selection in one request. The three under `/api/assets/` are declared above
 `/api/assets/{asset_id}` - see M3 below for what happens otherwise.
+
+**The last six close a gap that was never deliberate.** `/api/capabilities` reported
+precisely which optional piece was missing and then offered no way to go and get it, so
+installing the extras - and, worse, registering the very first root - were the workflows
+that still assumed a terminal. Two shapes, chosen by what the work is. Fetching a model
+is one slow download with byte progress, so it gets a runner and a thread, and reports
+on the status stream beside the scan; `FetchRunner` takes both because
+`clip.download` and `vlm.pull` already share a `(label, done, total)` progress
+signature, and because running two large downloads at once on one laptop helps nobody.
+Embedding and thumbnailing are per-asset work the job queue already existed for, so
+those only enqueue and nudge, and report through the queue counts that were already
+being streamed.
+
+`POST /api/thumbs` does not queue everything without a tile, which is the obvious
+reading and the wrong one: with `skip_smaller` on, a 32x32 sprite legitimately has no
+file, so that rule re-queues every small sprite in the library on every run and reports
+a number it will do nothing with. It mirrors `thumbs._image_thumb`'s own skip rule
+instead, from the probed `width`/`height`.
 
 `/api/capabilities` is load-bearing: the frontend hides controls for anything missing
 rather than showing buttons that error. Same principle as AssetGeneratorHelper's optional
@@ -676,6 +734,20 @@ image probe's colour-count guard could not see past its own saturation cap.
 the DevTools protocol and reading the screenshots, which caught the two UI bugs above.
 That is not a substitute for a test suite, and the query grammar in `web/search.js` -
 duplicated from `search.py` - is the part most likely to drift.
+
+**The status stream emitted on the wrong condition, and a later headless pass caught
+it.** The rule was "emit while busy, plus one frame on going idle", which is not the
+same as "emit on change" and differs in exactly one case: an idle stream polls every
+three seconds, so a scan that both starts and finishes between two polls is never once
+observed as busy. No frame is sent, the grid never learns the scan finished, and it sits
+empty until the page is reloaded. That is the ordinary case for a first small root -
+the worst possible moment for it, and invisible on the large library the rule was
+written against. It now diffs the payload and emits whenever it differs.
+
+Two things about that are worth keeping. Reading it, the old rule looks correct; it
+took watching a real browser fail to fill its grid to see otherwise. And the bug was
+latent for as long as adding a root meant using the CLI, because whoever did that also
+had a terminal telling them the scan had finished.
 
 ### M3 - Curation
 
@@ -1007,6 +1079,120 @@ limit now.
   missing host line under reference tiles and cost twenty minutes of looking for
   a bug in code that was already right. The driver gets a fresh profile now.
 
+### M6 - Audio, properly
+
+- [x] `probe/audio.py`: bit depth read from the field ffprobe actually fills,
+      `bitrate`, and peak/RMS loudness in dBFS
+- [x] `decode_pcm` moved into the probe, where decoding audio belongs
+- [x] Waveforms at absolute scale with square-rooted amplitude, clipped
+      columns in a warning colour, and no truncation of short clips
+- [x] Search: `rate:` `channels:` `depth:` `bitrate:` `peak:` `rms:`, and
+      `is:clipping | silent | mono | stereo`; negative numbers and `db` /
+      `kbps` units in the grammar
+- [x] `web/audition.js`: `p` plays the cursor asset and follows the cursor
+- [x] Quick Look: a wide waveform with a playhead and click-to-seek
+- [x] Inspector, Quick Look and CLI all state rate, channels, depth and level
+- [x] `tests/test_audio.py`, the first tests audio has had
+
+Done when a folder of sound effects can be gone through by ear without leaving
+the grid, and when the questions a Unity project asks about audio - what is
+stereo, what is clipping, what is 96 kHz for no reason - are things the query
+bar can answer.
+
+**The library, measured.** 215 audio files across the Unity projects: 155 WAV,
+55 OGG, 5 MP3. The three roots scanned as one library index 175 of them
+alongside 809 other assets. Durations run from 0.04 s to 262 s with a median of
+0.75 s, which is what an asset library of sound effects looks like: 164 of the
+215 tag `sfx`, 9 tag `music`, and 42 fall in the deliberate gap between two and
+thirty seconds and are left alone.
+
+**Two probe fields were wrong or missing, and measuring is what found them.**
+`bits_per_raw_sample` is the obvious field for bit depth and is the wrong one:
+ffprobe leaves it unset for every 16-bit PCM WAV, which is the most common audio
+format there is. Reading `bits_per_sample` first took coverage from 136 of 215
+files to 155 - every WAV in the library, including the 19 float32 ones the
+stdlib `wave` module refuses and which had been falling through to ffprobe and
+recording nothing. For the 60 lossy files the field is `0` rather than absent,
+because the concept does not apply, and `bitrate` is what carries the equivalent
+information; that was being discarded entirely and is now recorded for all 215.
+
+The WAV special case also got the measurement it never had: 3.1 ms in-process
+against ffprobe's 26 ms, so avoiding one subprocess per file is worth eight
+times its complexity on the 72% of a game project's audio that is WAV.
+
+**Peak-normalised waveforms were the real mistake, and it was invisible until
+it was measured.** Every audio editor scales a waveform so the file's own
+loudest moment fills the frame. In a grid that is wrong, because a grid is a
+comparison: 67 of the 215 files peak within a decibel of full scale and 18 sit
+more than 24 dB below it, and all 85 were drawn identically. The one question a
+wall of waveforms should answer at a glance - why is that one so quiet - was the
+one it could not.
+
+Absolute scale fixes that and introduces a second problem: linear amplitude at
+-24 dB is 6% of full scale, three pixels of a 256 px tile, which reads as an
+empty box rather than as a quiet sound. Square-rooting the amplitude is the
+standard half-decibel compromise and it is the right one here - full scale stays
+full height, -6 dB draws at 71%, -24 dB at 25%. Measured on the real files, the
+quietest five now draw 28 to 42 rows of 256 and the loudest five draw 230 to
+236, where before every one of them drew 118.
+
+**A threshold that was defined twice, and disagreed with itself.** The tile
+marked a column as clipping when its square-rooted amplitude passed a
+hard-coded 0.999, and `is:clipping` matched on peak at or above -0.1 dBFS.
+Those are not the same threshold: 0.999 post-square-root works out at -0.017 dB,
+so every file between the two - `MMSequencingBass1.wav` at -0.03 dB among them -
+matched the search and drew perfectly clean. The tile now derives its threshold
+from `audio.CLIPPING_DB`, and across the library all 18 assets that match
+`is:clipping` show the warning colour and none of the other 157 do.
+
+This is the failure that argues for the calibration run existing at all. Every
+test passed both before and after the fix, because both halves were self
+consistent and nothing compared them to each other. What found it was looking at
+eighteen tiles that should have been marked and seeing eighteen that were not.
+
+**What the waveforms found in the library.** `LoftDrop.wav`, shipping in the
+TopDownEngine demo scenes, is 30 KB of constant -32768: not silence, but every
+sample pinned to full negative scale. Peak says full scale and RMS says exactly
+the same, and a crest factor of zero is what says there is no sound in the file.
+It draws as a solid block of warning colour with no waveform in it at all, which
+is the tile doing precisely its job - a broken asset that had been invisible in
+a folder listing for as long as the demo has existed.
+
+`is:silent` matched nothing, and that is the correct answer rather than a broken
+filter: the quietest file in the library peaks at -36 dB, which is quiet and is
+not silent. The two nearest, `LoftWind.wav` and `MMSequencingHat2.wav`, are
+legitimately faint rather than empty, and a threshold moved up to catch them
+would have called them a name that is not true.
+
+**Cost.** Waveform rendering is 39 ms a file and 695 KB for all 215, a median
+tile of 3.3 KB, with zero failures. The loudness measurement adds 36 ms to
+probing one audio file against the 3 ms its header costs, which is the one place
+this milestone made a scan slower. It is worth it and it is small: audio is 175
+of 984 assets, the whole library scans in 56 seconds, and an incremental scan
+pays it once per file ever.
+
+**Auditioning is a mode, and that is the whole design.** Quick Look has played
+audio since M2, and using it to go through a folder of a hundred and thirty
+sound effects is three keystrokes and a full-screen flash per file. `p` starts
+an audition on the cursor and then follows the cursor, so arrowing along a row
+plays each sound in turn; it ends on `p`, on Escape, or on reaching an asset
+that is not audio. That last rule matters more than it sounds - a mode left
+armed while you browse a wall of sprites is a mode that surprises somebody
+later. Escape unwinds it before the inspector, because a sound playing is the
+most recent thing that started.
+
+**The headless run, which is what that pass is for.** Every check passes: the
+grid renders 175 waveforms, `p` marks one tile playing and requests one file,
+arrowing plays the next, Escape stops it, Quick Look's waveform is 720 px wide
+with a playhead that advances and a click a third of the way along that seeks to
+0.346 of the duration. Two things it found were in the test script rather than
+the tool, and both are worth writing down because they will recur: the query bar
+reloads on `input` and not on Enter, so dispatching the wrong event searched for
+nothing and then cheerfully checked the unfiltered library; and setting the bar's
+value without clearing the existing chip accumulates filters, which is the
+documented promote-to-chip behaviour working correctly and looking exactly like
+a bug.
+
 ## Testing
 
 `pytest`, with `--doctest-modules` over the package as in AssetGeneratorHelper, so the
@@ -1038,6 +1224,21 @@ that one refusal does not stop the queue; what moondream actually says is in M5 
 The reference tests stub the two functions in `probe/reference.py` that touch the
 network, because whether kenney.nl is up this morning is not a property of this code -
 and the parsing is tested against strings, which is what it takes as input anyway.
+
+**And once more for audio, where the installed thing is a codec.** WAV fixtures are real
+files written by the stdlib `wave` module, so the header tests exercise the parser rather
+than a mock of it. Everything ffprobe answers is tested against the JSON it returns,
+which is a string; loudness and waveform drawing are tested against numpy arrays built in
+the fixture. Nothing in `tests/test_audio.py` spawns ffmpeg, so nothing in it passes or
+fails depending on whether Homebrew has been run on this machine - which matters more
+here than elsewhere, because `decode_pcm` returning `None` is a supported state and a
+suite that silently skipped it would be testing the wrong branch.
+
+Each threshold carries its near miss, as the image detectors do: `sfx` at 2.0 seconds and
+not at 2.1, `is:clipping` at -0.09 dB and not at -0.13. That last pair is the regression
+test for the one defect the calibration run found and the suite did not, and it is
+written against the gap between the two thresholds rather than against either boundary,
+because a test sitting exactly on a boundary is decided by rounding.
 
 `tests/conftest.py` carries three guards, all of them earned. It fails any test that
 writes into `~/AssetKeep` or `~/.config/assetkeep`, after one silently did. It

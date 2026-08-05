@@ -8,8 +8,9 @@ tag:tileset  -tag:wip      include / exclude
 kind:image | model3d | audio | reference
 license:cc0  source:kenney  root:prototype  collection:jam
 w:>=512  h:<64  size:>1mb  tris:<5000  dur:<2s
+rate:>48000  channels:1  depth:24  bitrate:>192kbps  peak:>-6db  rms:<-30db
 has:alpha | animation | caption | license
-is:managed | missing | untagged | vendor
+is:managed | missing | untagged | vendor | clipping | silent | mono | stereo
 similar:1234               CLIP neighbours, or dHash ones
 sort:added | name | size | relevance
 ```
@@ -38,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Sequence
 
 from . import similarity, vectors
+from .probe import audio
 from .tagging import vocab
 
 #: Grammar prefix -> the attribute key the probes actually write.
@@ -57,6 +59,17 @@ NUMERIC_FIELDS = {
     "cols": "cols",
     "rows": "rows",
     "colors": "color_count",
+    # Audio. `rate` and `channels` are the two that answer a real import
+    # question in Unity - a 96 kHz sound effect is wasted bytes, and a stereo
+    # one cannot be positioned in 3D - and both were probed from M1 without ever
+    # being reachable from the query bar.
+    "rate": "sample_rate",
+    "samplerate": "sample_rate",
+    "channels": "channels",
+    "depth": "bit_depth",
+    "bitrate": "bitrate",
+    "peak": "peak_db",
+    "rms": "rms_db",
 }
 
 #: ``has:x`` -> the attribute that has to be truthy.
@@ -125,11 +138,19 @@ RRF_K = 60
 _UNIT_MULTIPLIERS = {
     "": 1, "b": 1, "kb": 1024, "k": 1024, "mb": 1024**2, "m": 1024**2,
     "gb": 1024**3, "g": 1024**3, "s": 1, "ms": 0.001,
+    # Decibels are already a bare number; the unit exists so that `peak:>-6db`
+    # reads the way a person would write it. Bitrates are the one place the
+    # binary `k` above is the wrong prefix - a 192 kbps file is 192,000 bits per
+    # second, not 196,608 - so `kbps` is decimal on purpose.
+    "db": 1, "khz": 1000, "kbps": 1000,
 }
 
 _TOKEN = re.compile(r'-?(?:[a-zA-Z_]+:)?"[^"]*"|\S+')
 _COMPARISON = re.compile(r"^(>=|<=|>|<|=)?(.*)$")
-_NUMBER = re.compile(r"^([0-9]*\.?[0-9]+)\s*([a-z]*)$", re.IGNORECASE)
+#: The leading minus is for decibels, which are the only negative numbers in the
+#: grammar. It cannot collide with the `-tag:wip` negation, which is stripped
+#: from the front of the whole token well before a value is parsed.
+_NUMBER = re.compile(r"^(-?[0-9]*\.?[0-9]+)\s*([a-z]*)$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -541,7 +562,39 @@ def _compile_is(value: str) -> tuple[str | None, list]:
             "WHERE l.asset_id = a.id AND r.vendor = 1)",
             [],
         )
+
+    # Audio levels. These are `peak:` and `channels:` underneath and exist
+    # anyway, because the useful queries here are ones nobody will phrase as a
+    # number: "which of these is clipping" and "which of these is silent" are
+    # the questions, and `peak:>=-0.1` is an answer to a question asked
+    # backwards.
+    if value == "clipping":
+        return _attribute_at_least("peak_db", audio.CLIPPING_DB)
+    if value == "silent":
+        return _attribute_below("peak_db", audio.SILENT_DB)
+    if value in ("mono", "stereo"):
+        return (
+            "EXISTS (SELECT 1 FROM attribute at2 WHERE at2.asset_id = a.id "
+            "AND at2.key = 'channels' AND at2.value_num = ?)",
+            [1.0 if value == "mono" else 2.0],
+        )
     return None, []
+
+
+def _attribute_at_least(key: str, threshold: float) -> tuple[str, list]:
+    return (
+        "EXISTS (SELECT 1 FROM attribute at2 WHERE at2.asset_id = a.id "
+        "AND at2.key = ? AND at2.value_num >= ?)",
+        [key, threshold],
+    )
+
+
+def _attribute_below(key: str, threshold: float) -> tuple[str, list]:
+    return (
+        "EXISTS (SELECT 1 FROM attribute at2 WHERE at2.asset_id = a.id "
+        "AND at2.key = ? AND at2.value_num < ?)",
+        [key, threshold],
+    )
 
 
 def _fts_match(words: tuple[str, ...]) -> str:
@@ -564,6 +617,11 @@ def _number(value: str) -> float | None:
     (512.0, 1048576.0, 2.0, 0.25)
     >>> _number("wide") is None
     True
+
+    Decibels are negative, and ``kbps`` is decimal where ``kb`` is binary:
+
+    >>> _number("-6db"), _number("192kbps"), _number("192kb")
+    (-6.0, 192000.0, 196608.0)
     """
     match = _NUMBER.match(value.strip())
     if match is None:

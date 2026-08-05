@@ -11,6 +11,7 @@ const KNOWN_FIELDS = new Set([
   "sort", "similar",
   "w", "width", "h", "height", "size", "bytes", "tris", "triangles", "verts",
   "dur", "duration", "frames", "cols", "rows", "colors",
+  "rate", "samplerate", "channels", "depth", "bitrate", "peak", "rms",
 ]);
 
 const TOKEN = /-?(?:[a-zA-Z_]+:)?"[^"]*"|\S+/g;

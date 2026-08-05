@@ -11,6 +11,7 @@
 //   p  audition audio, and keep playing as the cursor moves
 
 import * as api from "./api.js";
+import * as audition from "./audition.js";
 import * as grid from "./grid.js";
 import * as inspector from "./inspector.js";
 import * as quicklook from "./quicklook.js";
@@ -131,6 +132,7 @@ function start() {
   );
 
   subscribe(onChange);
+  audition.init();
   bindControls();
   bindKeyboard();
   bindImport();
@@ -155,6 +157,7 @@ function onChange(changed) {
   }
   if (changed.has("cursor")) {
     grid.scrollToCursor();
+    audition.follow(state.assets[state.cursor]);
   }
   if (changed.has("query")) renderQuery();
   if (changed.has("facets")) renderFacets();
@@ -721,6 +724,7 @@ const KEYS = {
     else if (quicklook.isOpen()) quicklook.close();
     // Before the inspector, because a sound playing is the most recent thing
     // that started and the first thing anyone reaches for Escape to stop.
+    else if (audition.isActive()) audition.stop();
     else if (inspector.isOpen()) inspector.close();
     else clearSelection();
   },
@@ -735,6 +739,7 @@ const KEYS = {
   C: copyPath,
   a: selectAll,
   d: describeSelected,
+  p: () => audition.toggle(state.assets[state.cursor]),
 };
 
 function move(delta) {
