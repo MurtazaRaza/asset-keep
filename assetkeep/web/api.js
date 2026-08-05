@@ -37,6 +37,14 @@ export async function getCapabilities() {
   return capabilities;
 }
 
+// Dropped after a model download, because that is the one moment the cached
+// answer goes wrong in the way that matters: the page was told there were no
+// weights, and now there are.
+export async function refreshCapabilities() {
+  capabilities = null;
+  return getCapabilities();
+}
+
 export const searchAssets = (query, limit, offset) =>
   request(
     `/api/assets?q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}`,
@@ -53,6 +61,15 @@ export const getFacets = (query) =>
   request(`/api/facets?q=${encodeURIComponent(query)}`);
 
 export const getRoots = () => request("/api/roots");
+
+// A root is configuration, not content: adding one writes the config file and
+// changes nothing in the index until a scan runs. Removing one leaves the
+// assets it found alone - prune is what deletes.
+export const addRoot = (path, options = {}) =>
+  post("/api/roots", { path, ...options });
+
+export const removeRoot = (path) =>
+  remove(`/api/roots?path=${encodeURIComponent(path)}`);
 
 export const startScan = (body) => post("/api/scan", body);
 
@@ -121,6 +138,28 @@ export const requestCaptions = (ids, redo = false) =>
   post("/api/captions", { ids, redo });
 
 export const retryJobs = () => post("/api/jobs/retry");
+
+// --- models and maintenance -------------------------------------------------
+//
+// Everything here used to be a terminal command. The counts come from
+// /api/maintenance rather than /api/capabilities because they move while the
+// page is open, which is exactly what the cached capability list is not.
+
+export const getMaintenance = () => request("/api/maintenance");
+
+// The two downloads return as soon as the thread starts; progress arrives on
+// the status stream, the same one the scan and the queue report through.
+export const downloadModel = () => post("/api/model/download");
+
+export const pullVlm = () => post("/api/vlm/pull");
+
+export const startEmbed = (redo = false) => post("/api/embed", { redo });
+
+export const startThumbs = (options = {}) => post("/api/thumbs", options);
+
+// Two calls by design: without `confirm` this only reports what would go, and
+// the panel shows that before asking. Nothing else in the tool deletes.
+export const prune = (confirm = false) => post("/api/prune", { confirm });
 
 // The version suffix is only ever set by something that has just replaced a
 // tile in place - refetching a reference's preview - because the URL is

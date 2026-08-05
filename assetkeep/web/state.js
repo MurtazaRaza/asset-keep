@@ -22,7 +22,10 @@ export const state = {
   roots: [],
   collections: [],
   capabilities: {},
-  status: { scan: {}, queue: {} },
+  // Counts that move while the page is open - embedded, captioned, outstanding
+  // - as opposed to `capabilities`, which cannot and is cached for the session.
+  maintenance: {},
+  status: { scan: {}, queue: {}, fetch: {} },
 };
 
 const listeners = new Set();
@@ -159,6 +162,16 @@ export async function refreshSidebar() {
 export async function refreshCollections() {
   state.collections = (await api.getCollections()).collections;
   emit("collections");
+}
+
+export async function refreshRoots() {
+  state.roots = (await api.getRoots()).roots;
+  emit("roots");
+}
+
+export async function refreshMaintenance() {
+  state.maintenance = await api.getMaintenance();
+  emit("maintenance");
 }
 
 // Fold an edited asset back into the loaded page without refetching it.

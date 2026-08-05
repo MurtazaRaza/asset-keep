@@ -22,13 +22,12 @@ import logging
 import mimetypes
 import shutil
 import sqlite3
-import subprocess
-import sys
 import tempfile
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Callable
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -139,12 +138,93 @@ class ScanRunner:
         self.state.current = path.name
 
 
+@dataclass
+class FetchState:
+    """Live progress of a model download running in a background thread."""
+
+    running: bool = False
+    #: ``weights`` for the CLIP export, ``ollama`` for the captioning model.
+    kind: str = ""
+    #: Whatever the fetcher is on right now - a filename, or ollama's own
+    #: "pulling manifest" / "verifying sha256" stages.
+    label: str = ""
+    #: Reported as a pair rather than a percentage, so the UI can say "312 of
+    #: 605 MB" instead of a bare number that could mean anything.
+    done: int = 0
+    total: int = 0
+    finished: str | None = None
+    error: str | None = None
+
+    def as_dict(self) -> dict:
+        return {
+            "running": self.running,
+            "kind": self.kind,
+            "label": self.label,
+            "done": self.done,
+            "total": self.total,
+            "finished": self.finished,
+            "error": self.error,
+        }
+
+
+class FetchRunner:
+    """Downloads a model off the request thread.
+
+    One runner for both models rather than one each, because they are the same
+    shape of work - a slow fetch reporting ``(label, done, total)``, which is
+    the signature :func:`assetkeep.tagging.clip.download` and
+    :func:`assetkeep.tagging.vlm.pull` already share - and because running both
+    at once on a laptop with one network link and 8 GB of memory helps nobody.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.state = FetchState()
+
+    def start(self, kind: str, work: Callable[[Callable], str]) -> bool:
+        """Begin a fetch. ``False`` if one is already running."""
+        with self._lock:
+            if self.state.running:
+                return False
+            self.state = FetchState(running=True, kind=kind)
+
+        threading.Thread(
+            target=self._run, args=(work,), daemon=True, name=f"assetkeep-{kind}"
+        ).start()
+        return True
+
+    def _run(self, work) -> None:
+        try:
+            self.state.finished = work(self._note)
+        except Exception as exc:  # noqa: BLE001 - reported to the UI, not raised
+            log.exception("%s download failed", self.state.kind)
+            self.state.error = f"{type(exc).__name__}: {exc}"
+        finally:
+            self.state.running = False
+
+    def _note(self, label: str, done: int, total: int) -> None:
+        self.state.label = label
+        self.state.done = done
+        self.state.total = total
+
+
 def create_app(config: Config) -> FastAPI:
     worker = job.Worker(config)
     runner = ScanRunner(config, worker)
+    fetcher = FetchRunner()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # Created and migrated once, here, before anything else can open it.
+        # Two connections racing to migrate the same empty file both read
+        # user_version 0 and both run migration 1, and the second one dies on
+        # "table root already exists" - which is what `assetkeep serve` against
+        # a database that does not exist yet used to do, since the worker
+        # thread and the first request reach it at the same moment. Every other
+        # entry point happens to connect once on the main thread first, which
+        # is why this only ever showed up on a machine with no index yet.
+        db.connect(config.db_path).close()
+
         # The queue is drained for as long as the server is up, so thumbnails
         # left over from a CLI scan finish without anyone asking.
         worker.start()
@@ -796,6 +876,189 @@ def create_app(config: Config) -> FastAPI:
         worker.nudge()
         return {"queued": len(queued), "assets": queued}
 
+    # --- models and maintenance ---------------------------------------------
+    #
+    # The CLI half of this tool could do all of the below and the UI could not,
+    # which made "install the optional extras" the one workflow that assumed a
+    # terminal. The split was never deliberate: `/api/capabilities` already
+    # reported precisely which piece was missing, and then offered no way to go
+    # and get it.
+    #
+    # Two shapes here, chosen by what the work actually is. Fetching a model is
+    # a single slow download with byte progress, so it gets a runner and a
+    # thread. Embedding and thumbnailing are per-asset work that the job queue
+    # and its SSE stream were built for, so those only enqueue and nudge.
+
+    @app.get("/api/maintenance")
+    def maintenance(conn: sqlite3.Connection = Depends(get_conn)) -> dict:
+        """What the settings panel needs: counts, and what is outstanding.
+
+        Separate from ``/api/capabilities`` because that is cached for the life
+        of the page - it answers "what can this machine do", which cannot change
+        while the tab is open. These numbers change every time the worker
+        finishes something.
+        """
+        semantic = clip.status(config)
+        embedded = vectors.count(conn, semantic["model"])
+        outstanding = len(vectors.pending(conn, semantic["model"]))
+        captioned = conn.execute(
+            "SELECT COUNT(*) FROM asset WHERE caption IS NOT NULL AND caption != ''"
+        ).fetchone()[0]
+        missing_files = conn.execute(
+            "SELECT COUNT(*) FROM asset a WHERE a.kind != 'reference' AND NOT EXISTS "
+            "(SELECT 1 FROM location l WHERE l.asset_id = a.id AND l.present = 1)"
+        ).fetchone()[0]
+
+        return {
+            "assets": conn.execute("SELECT COUNT(*) FROM asset").fetchone()[0],
+            "clip_model": semantic["model"],
+            "clip_label": semantic["label"],
+            "clip_weights": semantic["weights"],
+            "clip_deps": semantic["deps"],
+            "clip_download_bytes": semantic["download_bytes"],
+            "embedded": embedded,
+            "outstanding": outstanding,
+            "captioned": captioned,
+            "missing_files": int(missing_files),
+            "queue": job.status(conn).as_dict(),
+            "fetch": fetcher.state.as_dict(),
+        }
+
+    @app.post("/api/model/download")
+    def download_model(payload: dict = Body(default={})) -> dict:
+        """Fetch the CLIP weights - the last step before semantic search works."""
+        variant = clip.variant_for(
+            str(payload.get("model") or "") or config.tagging.clip_model
+        )
+        absent = clip.missing(config, variant)
+        if not absent:
+            return {"started": False, "reason": f"{variant.label} is already installed"}
+
+        def work(progress) -> str:
+            written = clip.download(config, variant, progress=progress)
+            return f"{len(written)} file(s) written"
+
+        if not fetcher.start("weights", work):
+            raise HTTPException(409, "a model download is already running")
+        return {
+            "started": True,
+            "label": variant.label,
+            "bytes": sum(weight.size for weight in absent),
+        }
+
+    @app.post("/api/vlm/pull")
+    def pull_vlm(payload: dict = Body(default={})) -> dict:
+        """Ask ollama to fetch the captioning model."""
+        name = str(payload.get("model") or "").strip() or vlm.model_name(config)
+        if vlm.installed_models(config) is None:
+            raise HTTPException(
+                409,
+                f"ollama is not answering at {vlm.endpoint(config)}; "
+                "start it with: ollama serve",
+            )
+
+        def work(progress) -> str:
+            vlm.pull(config, name, progress=progress)
+            return f"{name} is installed"
+
+        if not fetcher.start("ollama", work):
+            raise HTTPException(409, "a model download is already running")
+        return {"started": True, "model": name}
+
+    @app.post("/api/embed")
+    def start_embed(
+        payload: dict = Body(default={}), conn: sqlite3.Connection = Depends(get_conn)
+    ) -> dict:
+        """Queue embeddings for whatever has none.
+
+        Only enqueues, where ``assetkeep embed`` also drains: the server has a
+        worker running already, and the SSE stream reports it. Doing the work
+        here would block a request for the length of a library.
+        """
+        semantic = clip.status(config)
+        if not semantic["deps"]:
+            raise HTTPException(409, "the clip runtime is missing: uv sync --extra clip")
+        if not semantic["weights"]:
+            raise HTTPException(409, "no weights yet - download the model first")
+
+        model = semantic["model"]
+        if payload.get("redo"):
+            # Everything, rather than only what has no vector. The reason to ask
+            # for this is a changed backdrop, preprocessing or model, and none of
+            # those show up as a missing row.
+            conn.execute("DELETE FROM embedding WHERE model = ?", (model,))
+
+        limit = payload.get("limit")
+        outstanding = vectors.pending(
+            conn, model, limit=int(limit) if limit else None
+        )
+        for asset_id in outstanding:
+            db.enqueue(conn, "embedding", asset_id)
+
+        worker.nudge()
+        return {"queued": len(outstanding), "model": model}
+
+    @app.post("/api/thumbs")
+    def start_thumbs(
+        payload: dict = Body(default={}), conn: sqlite3.Connection = Depends(get_conn)
+    ) -> dict:
+        """Queue tiles for anything that should have one and does not.
+
+        Assets that are *meant* to have no tile are skipped rather than queued,
+        which is the whole difficulty here: with ``skip_smaller`` on, a 32x32
+        sprite legitimately has no file, and "everything without a thumbnail"
+        would re-queue every small sprite in the library on every run, report a
+        large number, and then do nothing at all with it.
+        """
+        requeued = job.requeue_failed(conn) if payload.get("retry") else 0
+        redo = bool(payload.get("redo"))
+        box = config.thumbnails.max_edge
+
+        rows = conn.execute(
+            """
+            SELECT a.id, a.content_hash, a.kind,
+                   MAX(CASE WHEN t.key = 'width' THEN t.value_num END) AS width,
+                   MAX(CASE WHEN t.key = 'height' THEN t.value_num END) AS height
+            FROM asset a
+            LEFT JOIN attribute t ON t.asset_id = a.id AND t.key IN ('width', 'height')
+            WHERE a.kind != 'reference'
+              AND EXISTS (SELECT 1 FROM location l
+                          WHERE l.asset_id = a.id AND l.present = 1)
+            GROUP BY a.id
+            """
+        ).fetchall()
+
+        queued = 0
+        for row in rows:
+            if not redo and thumbs.path_for(config, row["content_hash"]).exists():
+                continue
+            if not redo and _skips_thumbnail(config, row, box):
+                continue
+            db.enqueue(conn, "thumbnail", int(row["id"]))
+            queued += 1
+
+        worker.nudge()
+        return {"queued": queued, "requeued": requeued}
+
+    @app.post("/api/prune")
+    def prune_missing(
+        payload: dict = Body(default={}), conn: sqlite3.Connection = Depends(get_conn)
+    ) -> dict:
+        """Drop assets whose every file has gone.
+
+        Defaults to a dry run, and the UI asks before the real one. This is the
+        only destructive operation in the tool - tags, notes, source and licence
+        live on the asset and none of it comes back - so the confirmation is
+        deliberate rather than ceremonial.
+        """
+        doomed = scan_module.prune(conn, dry_run=True)
+        preview = [{"id": asset_id, "title": title} for asset_id, title in doomed[:20]]
+        if not payload.get("confirm"):
+            return {"deleted": 0, "count": len(doomed), "preview": preview}
+
+        scan_module.prune(conn)
+        return {"deleted": len(doomed), "count": len(doomed), "preview": preview}
+
     # --- roots and scanning -------------------------------------------------
 
     @app.get("/api/roots")
@@ -824,22 +1087,43 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/roots")
     def add_root(payload: dict = Body(...)) -> dict:
+        """Register a folder to index.
+
+        Takes the same options as ``assetkeep root add`` rather than a subset,
+        because the point of having this in the UI at all is that adding a root
+        should not be the one thing that sends someone to the terminal.
+        """
         path = Path(str(payload.get("path", ""))).expanduser().resolve()
         if not path.is_dir():
             raise HTTPException(400, f"not a directory: {path}")
 
         current = current_config()
-        root = RootConfig(path=path, vendor=bool(payload.get("vendor", False)))
+        root = RootConfig(
+            path=path,
+            mode="managed" if payload.get("managed") else "indexed",
+            recursive=bool(payload.get("recursive", True)),
+            excludes=tuple(str(g) for g in payload.get("exclude", []) if str(g).strip()),
+            exclude_defaults=bool(payload.get("exclude_defaults", True)),
+            vendor=bool(payload.get("vendor", False)),
+        )
         config_module.save(config_module.with_root(current, root))
         return {"added": str(path), "name": root.name}
 
     @app.delete("/api/roots")
     def remove_root(path: str) -> dict:
+        """Stop indexing a folder. Indexed assets are kept, as with the CLI.
+
+        Dropping the rows here as well would be the surprising reading: the
+        tags, notes and licences on those assets are the part that cannot be
+        rebuilt by rescanning, and ``/api/prune`` is where deleting lives.
+        """
+        target = Path(path).expanduser().resolve()
         current = current_config()
-        config_module.save(
-            config_module.without_root(current, Path(path).expanduser())
-        )
-        return {"removed": path}
+        if not any(root.path == target for root in current.roots):
+            raise HTTPException(404, f"not a configured root: {target}")
+
+        config_module.save(config_module.without_root(current, target))
+        return {"removed": str(target)}
 
     @app.post("/api/scan")
     def start_scan(payload: dict = Body(default={})) -> dict:
@@ -864,7 +1148,7 @@ def create_app(config: Config) -> FastAPI:
             # opened this.
             conn = db.connect(config.db_path, same_thread=False)
             try:
-                idle_sent = False
+                last: str | None = None
                 while True:
                     queue = job.status(conn)
                     queue.running = runner.state.running
@@ -873,15 +1157,26 @@ def create_app(config: Config) -> FastAPI:
                     payload = {
                         "scan": runner.state.as_dict(),
                         "queue": queue.as_dict(),
+                        "fetch": fetcher.state.as_dict(),
                     }
-                    busy = runner.state.running or queue.pending > 0
+                    busy = (
+                        runner.state.running
+                        or queue.pending > 0
+                        or fetcher.state.running
+                    )
 
-                    # Keep emitting while busy; once idle, send one final frame
-                    # and then only a heartbeat, so an open tab is not a
-                    # permanent database poll.
-                    if busy or not idle_sent:
-                        yield f"data: {json.dumps(payload)}\n\n"
-                        idle_sent = not busy
+                    # Emit whenever anything changed, rather than only while
+                    # busy. The previous rule - one frame on going idle - looks
+                    # equivalent and is not: an idle stream polls every three
+                    # seconds, so a scan that starts *and* finishes between two
+                    # polls is never once observed as busy, no frame is ever
+                    # sent, and the grid sits empty until somebody reloads the
+                    # page. That is the ordinary case for a first small root,
+                    # which is the worst possible moment for it.
+                    body = json.dumps(payload)
+                    if body != last:
+                        yield f"data: {body}\n\n"
+                        last = body
                     else:
                         yield ": heartbeat\n\n"
 
@@ -958,6 +1253,21 @@ def _decorate(conn: sqlite3.Connection, rows) -> list[dict]:
             asset["id"], asset["kind"] == "reference"
         )
     return assets
+
+
+def _skips_thumbnail(config: Config, row: sqlite3.Row, box: int) -> bool:
+    """Whether this asset is meant to have no tile, so a backfill leaves it be.
+
+    Mirrors the rule in :func:`assetkeep.thumbs._image_thumb`: only an image
+    skips, and only when it already fits the box. An asset whose dimensions were
+    never probed is not assumed to skip - queueing one job too many costs a
+    render, and skipping one too many leaves a permanently blank tile.
+    """
+    if row["kind"] != "image" or not config.thumbnails.skip_smaller:
+        return False
+    if row["width"] is None or row["height"] is None:
+        return False
+    return max(int(row["width"]), int(row["height"])) <= box
 
 
 def _present_path(conn: sqlite3.Connection, asset_id: int) -> Path | None:

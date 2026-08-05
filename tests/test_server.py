@@ -498,3 +498,158 @@ def test_captions_are_queued_when_the_model_is_there(client, monkeypatch):
     result = client.post("/api/captions", json={"ids": ids(client, "")}).json()
 
     assert result["queued"] == 3
+
+
+# --- roots ------------------------------------------------------------------
+#
+# The endpoints existed from the start and the frontend only ever wired up the
+# GET, which made adding a folder the one workflow that still needed a terminal
+# - and the first workflow of all, so an untouched install opened on an empty
+# grid with no way out of it.
+
+
+def test_a_root_can_be_added_through_the_api(client, tmp_path):
+    extra = tmp_path / "more"
+    extra.mkdir()
+
+    result = client.post(
+        "/api/roots", json={"path": str(extra), "vendor": True}
+    ).json()
+    assert result["added"] == str(extra)
+
+    listed = client.get("/api/roots").json()["roots"]
+    added = next(root for root in listed if root["path"] == str(extra))
+    assert added["vendor"] is True
+    assert added["count"] == 0, "nothing is indexed until a scan runs"
+
+
+def test_adding_a_root_carries_the_options_the_cli_takes(client, tmp_path):
+    """Parity is the point: the UI offering a subset is how you end up back at
+    the command line for the one root that needed a flag."""
+    from assetkeep import config as config_module
+
+    extra = tmp_path / "flat"
+    extra.mkdir()
+    client.post(
+        "/api/roots",
+        json={"path": str(extra), "recursive": False, "managed": True,
+              "exclude": ["*.bak"]},
+    )
+
+    saved = config_module.load(client.config.source_path)
+    root = next(entry for entry in saved.roots if entry.path == extra)
+    assert root.recursive is False
+    assert root.mode == "managed"
+    assert root.excludes == ("*.bak",)
+
+
+def test_adding_a_root_that_is_not_a_directory_is_a_400(client, tmp_path):
+    response = client.post("/api/roots", json={"path": str(tmp_path / "nope")})
+    assert response.status_code == 400
+
+
+def test_removing_a_root_keeps_the_assets_it_found(client):
+    """Tags, notes and licences live on the asset and no rescan rebuilds them,
+    so unconfiguring a folder must not be a delete. Prune is the delete."""
+    before = client.get("/api/assets/count").json()["count"]
+    root = client.get("/api/roots").json()["roots"][0]
+
+    client.delete("/api/roots", params={"path": root["path"]})
+
+    assert client.get("/api/roots").json()["roots"] == []
+    assert client.get("/api/assets/count").json()["count"] == before
+
+
+def test_removing_a_root_that_is_not_configured_is_a_404(client, tmp_path):
+    response = client.delete("/api/roots", params={"path": str(tmp_path / "nope")})
+    assert response.status_code == 404
+
+
+# --- models and maintenance -------------------------------------------------
+
+
+def test_maintenance_reports_what_the_settings_panel_shows(client):
+    payload = client.get("/api/maintenance").json()
+    assert payload["assets"] == 3
+    assert payload["clip_weights"] is False
+    assert payload["embedded"] == 0
+    assert payload["missing_files"] == 0
+    assert set(payload) >= {"queue", "fetch", "outstanding", "captioned"}
+
+
+def test_embedding_is_refused_before_the_model_is_there(client):
+    """A 409 naming the missing piece, rather than jobs nothing can ever run."""
+    response = client.post("/api/embed", json={})
+    assert response.status_code == 409
+    assert "weights" in response.json()["detail"] or "clip" in response.json()["detail"]
+
+
+def test_pulling_the_caption_model_is_refused_when_ollama_is_absent(client):
+    response = client.post("/api/vlm/pull", json={})
+    assert response.status_code == 409
+    assert "ollama" in response.json()["detail"]
+
+
+def test_only_one_model_download_runs_at_a_time(client, monkeypatch):
+    """One network link and one laptop: a second concurrent fetch helps nobody,
+    and the runner refuses rather than starting it."""
+    import threading
+
+    from assetkeep.tagging import clip
+
+    release = threading.Event()
+
+    def slow_download(config, variant=None, progress=None):
+        if progress is not None:
+            progress("model.onnx", 1, 2)
+        release.wait(timeout=5)
+        return [Path("model.onnx")]
+
+    monkeypatch.setattr(clip, "download", slow_download)
+
+    first = client.post("/api/model/download", json={})
+    assert first.status_code == 200
+    assert first.json()["started"] is True
+
+    assert client.post("/api/model/download", json={}).status_code == 409
+    release.set()
+
+
+def test_downloading_is_a_no_op_when_the_weights_are_already_there(client, monkeypatch):
+    from assetkeep.tagging import clip
+
+    monkeypatch.setattr(clip, "missing", lambda config, variant: [])
+    result = client.post("/api/model/download", json={}).json()
+
+    assert result["started"] is False
+    assert "already" in result["reason"]
+
+
+def test_rebuilding_thumbnails_leaves_alone_what_is_meant_to_have_none(client):
+    """With skip_smaller on, a 32x32 sprite legitimately has no tile. Queueing
+    everything without a file would re-queue every small sprite on every run,
+    report a large number and then do nothing whatever with it."""
+    assets = client.get("/api/assets").json()["assets"]
+    big = next(a for a in assets if (a["attributes"].get("width") or 0) > 256)
+    thumbs.generate(client.config, "image", Path(big["path"]), big["content_hash"])
+
+    assert client.post("/api/thumbs", json={}).json()["queued"] == 0
+    assert client.post("/api/thumbs", json={"redo": True}).json()["queued"] == 3
+
+
+def test_prune_previews_before_it_deletes(client):
+    """The one destructive operation in the tool, so the default is a dry run
+    and the panel shows the list before it asks."""
+    conn = db.connect(client.config.db_path)
+    conn.execute("UPDATE location SET present = 0")
+    conn.close()
+
+    preview = client.post("/api/prune", json={}).json()
+    assert preview["count"] == 3
+    assert preview["deleted"] == 0
+    assert len(preview["preview"]) == 3
+    assert client.get("/api/assets/count").json()["count"] == 3
+
+    done = client.post("/api/prune", json={"confirm": True}).json()
+    assert done["deleted"] == 3
+    assert client.get("/api/assets/count").json()["count"] == 0

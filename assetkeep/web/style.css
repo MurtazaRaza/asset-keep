@@ -65,7 +65,9 @@ input:focus { outline: none; border-color: var(--accent); }
 /* --- sidebar --- */
 
 #sidebar {
-  width: 210px;
+  /* 228 rather than 210 to fit a fourth control in the header without the
+     title ellipsing. The facet rows below have room to spare either way. */
+  width: 228px;
   flex: none;
   background: var(--panel);
   border-right: 1px solid var(--line);
@@ -77,7 +79,7 @@ body.no-sidebar #sidebar { display: none; }
 .sidebar-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   padding: 10px 12px;
   position: sticky;
   top: 0;
@@ -85,7 +87,23 @@ body.no-sidebar #sidebar { display: none; }
   border-bottom: 1px solid var(--line);
   z-index: 2;
 }
-.sidebar-head h1 { font-size: 13px; margin: 0; flex: 1; letter-spacing: .3px; }
+/* The title yields first, as a backstop. Four controls is a tight fit, and
+   without a shrinkable heading the last of them is pushed out past the
+   sidebar's edge and clipped - which is invisible rather than merely cramped,
+   and cost the settings button its entire existence until a headless run
+   measured its bounding box against the header's. */
+.sidebar-head h1 {
+  font-size: 13px;
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: .3px;
+}
+.sidebar-head button { flex: none; padding: 3px 5px; }
+#settings-button { font-size: 13px; line-height: 1; }
 
 .facet { padding: 10px 12px 0; }
 .facet h2 {
@@ -170,7 +188,19 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 #grid { flex: 1; overflow-y: auto; position: relative; outline: none; }
 #canvas { position: relative; }
 
-#empty { color: var(--dim); text-align: center; margin-top: 60px; }
+#empty {
+  color: var(--dim);
+  text-align: center;
+  margin-top: 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+#empty[hidden] { display: none; }
+#empty p { margin: 0; }
+#empty button { border-color: var(--line); color: var(--text); }
+#empty button[hidden] { display: none; }
 
 .cell {
   position: absolute;
@@ -552,6 +582,129 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 #dropzone span { color: var(--dim); }
 
 /* --- toast --- */
+
+/* --- settings --- */
+
+#settings {
+  position: fixed;
+  inset: 0;
+  background: #0c0e12d9;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 20px;
+  overflow-y: auto;
+  z-index: 30;
+}
+#settings[hidden] { display: none; }
+
+#settings .sheet {
+  width: min(560px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 16px 48px #0009;
+}
+
+#settings header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sheet-body { padding: 4px 14px 14px; }
+.sheet-body section { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.sheet-body section:last-of-type { border-bottom: none; }
+.sheet-body h3 {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: var(--dim);
+  margin: 0 0 8px;
+}
+
+/* One line per fact, with whatever acts on it at the end of it. The state text
+   comes first because it is the part that is read; the button is what you do
+   about it only once you have read it. */
+.sheet-body .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+.sheet-body .row span { flex: 1; color: var(--dim); }
+.sheet-body .row button { flex: none; font-size: 11px; padding: 3px 8px; }
+.sheet-body .row button[hidden] { display: none; }
+.sheet-body .row button:disabled { opacity: .4; cursor: default; }
+.sheet-body .row button:disabled:hover { border-color: transparent; background: none; }
+
+.note { color: var(--dim); font-size: 11px; margin: 0 0 8px; }
+.note[hidden] { display: none; }
+
+button.danger:hover { color: var(--danger); border-color: var(--danger); }
+
+.fetching {
+  color: var(--accent);
+  font-size: 11px;
+  margin: 10px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+.fetching[hidden] { display: none; }
+
+.rootlist { list-style: none; margin: 0 0 10px; padding: 0; }
+.rootlist li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.rootlist li:hover { background: var(--panel-2); }
+.rootlist li .name { font-weight: 500; }
+.rootlist li .ns { color: var(--dim); font-size: 10px; }
+.rootlist li .count {
+  color: var(--dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+.rootlist li .rowdrop {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--dim);
+  line-height: 1;
+  visibility: hidden;
+}
+.rootlist li:hover .rowdrop { visibility: visible; }
+.rootlist li .rowdrop:hover { color: var(--danger); }
+/* The path wraps onto its own line rather than being truncated: it is the only
+   thing distinguishing two roots that canonicalise to a similar name. */
+.rootlist li .path {
+  flex-basis: 100%;
+  color: var(--dim);
+  font-size: 10px;
+  word-break: break-all;
+}
+
+.addrow { display: flex; gap: 6px; }
+.addrow input { flex: 1; font-size: 12px; }
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.check input { width: auto; }
 
 #toast {
   position: fixed;

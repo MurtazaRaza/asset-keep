@@ -15,10 +15,11 @@
     <h1>AssetKeep</h1>
     <button id="add-link" class="ghost" title="Add a URL as a reference">Link</button>
     <button id="scan-button" class="ghost" title="Scan all roots">Scan</button>
+    <button id="settings-button" class="ghost" title="Settings ( , )">&#9881;</button>
   </header>
 
   <section class="facet" id="roots-section">
-    <h2>Roots</h2>
+    <h2>Roots<button id="add-root" class="ghost" title="Add a folder to index">+</button></h2>
     <ul id="roots"></ul>
   </section>
 
@@ -57,7 +58,10 @@
 
   <div id="grid" tabindex="0">
     <div id="canvas"></div>
-    <p id="empty" hidden>Nothing matches.</p>
+    <div id="empty" hidden>
+      <p id="empty-text">Nothing matches.</p>
+      <button id="empty-action" class="ghost" hidden></button>
+    </div>
     <div id="dropzone" hidden>
       <div>
         <strong id="drop-title">Drop to import</strong>
@@ -139,6 +143,74 @@
     <span id="ql-meta"></span>
     <span class="spacer"></span>
     <span class="hint">&larr; &rarr; move &middot; space close &middot; r reveal &middot; c copy</span>
+  </div>
+</div>
+
+<div id="settings" hidden>
+  <div class="sheet">
+    <header>
+      <b>Settings</b>
+      <span class="spacer"></span>
+      <button id="set-close" class="ghost" title="Close ( esc )">&times;</button>
+    </header>
+
+    <div class="sheet-body">
+      <section>
+        <h3>Folders</h3>
+        <p class="note">Indexed in place. Nothing is copied or moved.</p>
+        <ul id="set-roots" class="rootlist"></ul>
+        <p id="set-roots-empty" class="note" hidden>No folders yet.</p>
+
+        <div class="addrow">
+          <input id="set-root-path" type="text" spellcheck="false" autocomplete="off"
+                 placeholder="/Users/you/Projects/Game/Assets">
+          <button id="set-root-add">Add</button>
+        </div>
+        <label class="check">
+          <input id="set-root-vendor" type="checkbox">
+          Third-party pack content, not my own work
+        </label>
+      </section>
+
+      <section>
+        <h3>Semantic search</h3>
+        <p class="row">
+          <span id="set-clip-state"></span>
+          <button id="set-clip-download" class="ghost" hidden>Download</button>
+        </p>
+        <p class="row">
+          <span id="set-embed-state"></span>
+          <button id="set-embed" class="ghost" hidden>Embed</button>
+          <button id="set-embed-redo" class="ghost" hidden title="Discard and rebuild every vector">Redo all</button>
+        </p>
+      </section>
+
+      <section>
+        <h3>Captions</h3>
+        <p class="row">
+          <span id="set-vlm-state"></span>
+          <button id="set-vlm-pull" class="ghost" hidden>Pull</button>
+        </p>
+      </section>
+
+      <section>
+        <h3>Maintenance</h3>
+        <p class="row">
+          <span id="set-thumbs-state"></span>
+          <button id="set-thumbs" class="ghost" title="Render any tile that is missing">Rebuild thumbnails</button>
+        </p>
+        <p class="row">
+          <span id="set-queue-state"></span>
+          <button id="set-retry" class="ghost" hidden>Retry failed</button>
+        </p>
+        <p class="row">
+          <span id="set-prune-state"></span>
+          <button id="set-prune" class="ghost danger" title="Delete assets whose files are gone">Prune…</button>
+        </p>
+      </section>
+
+      <p id="set-fetch" class="fetching" hidden></p>
+    </div>
   </div>
 </div>
 

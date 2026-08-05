@@ -7,13 +7,15 @@
 //   arrows  move           space  quick look      c  copy to destination
 //   enter/i  inspector     esc  close, deselect   C  copy path
 //   [  toggle sidebar      +/-  thumbnail size    a  select all
-//   d  describe with the vision model
+//   d  describe with the vision model             ,  settings
+//   p  audition audio, and keep playing as the cursor moves
 
 import * as api from "./api.js";
 import * as grid from "./grid.js";
 import * as inspector from "./inspector.js";
 import * as quicklook from "./quicklook.js";
 import * as query from "./search.js";
+import * as settings from "./settings.js";
 import {
   state,
   subscribe,
@@ -25,6 +27,7 @@ import {
   selectedAssets,
   refreshSidebar,
   refreshCollections,
+  refreshMaintenance,
   reload,
 } from "./state.js";
 
@@ -36,6 +39,8 @@ const elements = {
   grid: $("grid"),
   canvas: $("canvas"),
   empty: $("empty"),
+  emptyText: $("empty-text"),
+  emptyAction: $("empty-action"),
   dropzone: $("dropzone"),
   tags: $("tags"),
   kinds: $("kinds"),
@@ -98,6 +103,33 @@ function start() {
     },
   );
 
+  settings.init(
+    {
+      root: $("settings"),
+      close: $("set-close"),
+      roots: $("set-roots"),
+      rootsEmpty: $("set-roots-empty"),
+      rootPath: $("set-root-path"),
+      rootVendor: $("set-root-vendor"),
+      rootAdd: $("set-root-add"),
+      clipState: $("set-clip-state"),
+      clipDownload: $("set-clip-download"),
+      embedState: $("set-embed-state"),
+      embed: $("set-embed"),
+      embedRedo: $("set-embed-redo"),
+      vlmState: $("set-vlm-state"),
+      vlmPull: $("set-vlm-pull"),
+      thumbsState: $("set-thumbs-state"),
+      thumbs: $("set-thumbs"),
+      queueState: $("set-queue-state"),
+      retry: $("set-retry"),
+      pruneState: $("set-prune-state"),
+      prune: $("set-prune"),
+      fetchState: $("set-fetch"),
+    },
+    { onToast: toast },
+  );
+
   subscribe(onChange);
   bindControls();
   bindKeyboard();
@@ -115,16 +147,26 @@ function start() {
 function onChange(changed) {
   if (changed.has("results")) {
     grid.reset();
-    elements.empty.hidden = state.assets.length > 0 || state.loading;
+    renderEmpty();
   }
   if (changed.has("layout")) grid.render(true);
-  if (changed.has("selection") || changed.has("cursor")) grid.refreshStates();
-  if (changed.has("cursor")) grid.scrollToCursor();
+  if (changed.has("selection") || changed.has("cursor") || changed.has("playing")) {
+    grid.refreshStates();
+  }
+  if (changed.has("cursor")) {
+    grid.scrollToCursor();
+  }
   if (changed.has("query")) renderQuery();
   if (changed.has("facets")) renderFacets();
-  if (changed.has("roots")) renderRoots();
+  if (changed.has("roots")) {
+    renderRoots();
+    renderEmpty();
+  }
   if (changed.has("collections")) renderCollections();
   if (changed.has("capabilities")) renderCapabilities();
+  if (changed.has("roots") || changed.has("maintenance") || changed.has("capabilities")) {
+    settings.render();
+  }
   if (changed.has("assets")) grid.render(true);
   if (changed.has("selection") || changed.has("cursor") || changed.has("results")) {
     inspector.refresh();
@@ -301,6 +343,34 @@ function renderCapabilities() {
     : "";
 }
 
+// An empty library and an empty result set are different problems, and until
+// now both said "Nothing matches." The one that mattered was the one where
+// nothing *could* match: no folders configured, so Scan walks nothing and
+// cheerfully reports four zeroes, with no hint that the thing to fix is one
+// panel away. Say which of the three it is, and offer the way out of each.
+function renderEmpty() {
+  const nothing = state.assets.length === 0 && !state.loading;
+  elements.empty.hidden = !nothing;
+  if (!nothing) return;
+
+  if (state.query) {
+    elements.emptyText.textContent = "Nothing matches.";
+    elements.emptyAction.hidden = true;
+    return;
+  }
+
+  elements.emptyAction.hidden = false;
+  if (!state.roots.length) {
+    elements.emptyText.textContent = "No folders are being indexed yet.";
+    elements.emptyAction.textContent = "Add a folder";
+    elements.emptyAction.dataset.action = "settings";
+  } else {
+    elements.emptyText.textContent = "Nothing indexed yet.";
+    elements.emptyAction.textContent = "Scan now";
+    elements.emptyAction.dataset.action = "scan";
+  }
+}
+
 function renderStatus() {
   const shown = state.assets.length;
   elements.count.textContent = state.total
@@ -326,7 +396,33 @@ function onStatus(payload) {
     if (count) parts.push(`${count} ${kind}${count === 1 ? "" : "s"} queued`);
   }
   if (queue.failed) parts.push(`${queue.failed} failed`);
+
+  const fetching = payload.fetch || {};
+  if (fetching.running) {
+    const share = fetching.total
+      ? ` ${Math.floor((fetching.done / fetching.total) * 100)}%`
+      : "";
+    parts.push(`${fetching.label || "downloading"}${share}`);
+  }
   elements.progress.textContent = parts.join("  ·  ");
+
+  // A finished download changes what this machine can do, and the capability
+  // list is cached for the life of the page - so it is refetched here rather
+  // than left insisting the weights are missing until someone reloads.
+  const settled = fetching.error || fetching.finished;
+  if (!fetching.running && settled && onStatus.lastFetch !== settled) {
+    onStatus.lastFetch = settled;
+    toast(fetching.error ? `Download failed: ${fetching.error}` : settled);
+    api
+      .refreshCapabilities()
+      .then(refreshSidebar)
+      .then(refreshMaintenance)
+      .catch(() => {});
+  }
+
+  // Redraws the panel, and refetches its counts once the work behind it has
+  // settled - otherwise a scan started from the panel finishes without it.
+  settings.noteProgress(payload);
 
   // A caption written by the worker is not visible anywhere until something
   // asks for the asset again, and the panel is where it would be looked for.
@@ -366,13 +462,16 @@ function bindControls() {
   });
 
   $("sidebar-toggle").addEventListener("click", toggleSidebar);
-  $("scan-button").addEventListener("click", async () => {
-    try {
-      await api.startScan({});
-      toast("Scan started");
-    } catch {
-      toast("A scan is already running");
-    }
+  $("scan-button").addEventListener("click", startScan);
+  $("settings-button").addEventListener("click", () => settings.toggle());
+  $("add-root").addEventListener("click", (event) => {
+    event.stopPropagation();
+    settings.open();
+  });
+
+  elements.emptyAction.addEventListener("click", () => {
+    if (elements.emptyAction.dataset.action === "scan") startScan();
+    else settings.open();
   });
 
   for (const button of document.querySelectorAll("#sizes button")) {
@@ -408,6 +507,23 @@ function bindControls() {
     await refreshCollections();
     toast(`Created ${name}`);
   });
+}
+
+// Scanning with no roots configured is the one case worth intercepting: the
+// request succeeds, walks nothing, and reports zeroes, which reads as a broken
+// scanner rather than as an empty configuration.
+async function startScan() {
+  if (!state.roots.length) {
+    toast("No folders are being indexed yet");
+    settings.open();
+    return;
+  }
+  try {
+    await api.startScan({});
+    toast("Scan started");
+  } catch {
+    toast("A scan is already running");
+  }
 }
 
 // --- references ---------------------------------------------------------------
@@ -573,6 +689,10 @@ function bindKeyboard() {
       return;
     }
 
+    // The settings panel is modal: it owns the keyboard while it is open, so a
+    // stray arrow key does not move a cursor nobody can see behind it.
+    if (settings.isOpen() && event.key !== "Escape" && event.key !== ",") return;
+
     const handler = KEYS[event.key];
     if (!handler) return;
     event.preventDefault();
@@ -590,13 +710,17 @@ const KEYS = {
   Enter: () => inspector.toggle(),
   i: () => inspector.toggle(),
   Escape: () => {
-    // One key, unwinding one layer at a time: the modal, then the panel, then
-    // the selection. Closing all three at once is how you lose a selection you
-    // spent a minute building because a preview was open over it.
-    if (quicklook.isOpen()) quicklook.close();
+    // One key, unwinding one layer at a time: the modals, then the panel, then
+    // the selection. Closing all of them at once is how you lose a selection
+    // you spent a minute building because a preview was open over it.
+    if (settings.isOpen()) settings.close();
+    else if (quicklook.isOpen()) quicklook.close();
+    // Before the inspector, because a sound playing is the most recent thing
+    // that started and the first thing anyone reaches for Escape to stop.
     else if (inspector.isOpen()) inspector.close();
     else clearSelection();
   },
+  ",": () => settings.toggle(),
   "[": toggleSidebar,
   "+": () => stepSize(1),
   "=": () => stepSize(1),
