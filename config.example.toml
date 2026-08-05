@@ -1,0 +1,64 @@
+# Copy to ~/.config/assetkeep/config.toml, or let `assetkeep root add` write it.
+# Every key here is shown at its default; all of them can be omitted.
+
+[general]
+db_path     = "~/AssetKeep/index.db"     # derived and disposable, safe to delete
+vault_path  = "~/AssetKeep/vault"        # where `assetkeep import` and drag-drop land
+thumbs_path = "~/AssetKeep/thumbs"
+models_path = "~/AssetKeep/models"       # downloaded CLIP weights
+
+# Remembered "copy to" destination, normally whichever Unity Assets/ folder you
+# are working in. Unset by default.
+# copy_target = "~/UnityProjects/Prototype/Assets"
+
+# What happens to assets whose every location has vanished. "keep" marks them
+# absent and leaves the metadata alone. Nothing deletes without `assetkeep prune`.
+missing_policy = "keep"
+
+# Only needed if neither impasse nor pyassimp can find libassimp on their own.
+# /opt/homebrew/lib is already searched, so a `brew install assimp` needs nothing here.
+# assimp_lib_path = "/opt/homebrew/lib/libassimp.dylib"
+
+[thumbnails]
+max_edge     = 256
+quality      = 80
+skip_smaller = true   # serve the original when it already fits the box
+
+[tagging]
+vocab_path     = ""    # optional user vocabulary overriding the built-in one
+folder_depth   = 2     # how many parent folder names become tags
+
+# Which exported CLIP to use. Changing this means the existing vectors stop
+# being comparable, so the library re-embeds on the next `assetkeep embed`.
+clip_model     = "clip-vit-b-32"
+
+# How sure the zero-shot tagger has to be. This is a probability within one
+# namespace, not a raw cosine similarity: the tags of each namespace are scored
+# against each other plus a "none of these" option, and the winner is written
+# only if it clears this. Below about 0.35 it starts calling masks normal maps.
+clip_threshold = 0.4
+
+# Captions, written by a vision model running in ollama. Opt-in per asset or per
+# collection - nothing captions the library on its own - and off entirely if
+# ollama is not running, which `assetkeep vlm status` will tell you.
+[vlm]
+model   = "moondream"                # ~1.7 GB; `assetkeep vlm pull` fetches it
+url     = "http://127.0.0.1:11434"   # ollama may be on another machine
+timeout = 180.0                      # the first call pays for loading the weights
+
+[[root]]
+path      = "~/_UnityProjects/MyStarterUtils/MyStarterUtils/Assets"
+mode      = "indexed"  # indexed leaves the folder untouched; managed is the vault
+recursive = true
+vendor    = true       # third-party pack content, not your own work
+exclude   = ["**/Editor/**"]
+
+[[root]]
+path   = "~/_AutomationProjs/AssetGeneratorHelper/out"
+vendor = false
+
+# Written for you the first time anything is imported, so the vault is scanned
+# like any other folder. There is no need to add it by hand.
+# [[root]]
+# path = "~/AssetKeep/vault"
+# mode = "managed"

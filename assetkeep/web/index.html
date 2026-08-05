@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AssetKeep</title>
+  <!-- Inline, so the page costs no extra request and there is no file to lose. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%235aa9f0'/%3E%3Crect x='3' y='3' width='4' height='4' fill='%2316181d'/%3E%3Crect x='9' y='3' width='4' height='4' fill='%23a8d3f7'/%3E%3Crect x='3' y='9' width='4' height='4' fill='%23a8d3f7'/%3E%3Crect x='9' y='9' width='4' height='4' fill='%2316181d'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<aside id="sidebar">
+  <header class="sidebar-head">
+    <h1>AssetKeep</h1>
+    <button id="add-link" class="ghost" title="Add a URL as a reference">Link</button>
+    <button id="scan-button" class="ghost" title="Scan all roots">Scan</button>
+  </header>
+
+  <section class="facet" id="roots-section">
+    <h2>Roots</h2>
+    <ul id="roots"></ul>
+  </section>
+
+  <section class="facet">
+    <h2>Kinds</h2>
+    <ul id="kinds"></ul>
+  </section>
+
+  <section class="facet" id="collections-section">
+    <h2>Collections<button id="new-collection" class="ghost" title="New collection from the selection">+</button></h2>
+    <ul id="collections"></ul>
+  </section>
+
+  <section class="facet">
+    <h2>Tags</h2>
+    <input id="tag-filter" type="search" placeholder="filter tags" autocomplete="off">
+    <ul id="tags"></ul>
+  </section>
+</aside>
+
+<main>
+  <div id="queryrow">
+    <button id="sidebar-toggle" class="ghost" title="Toggle sidebar ( [ )">&#9776;</button>
+    <div id="querybox">
+      <div id="chips"></div>
+      <input id="query" type="text" spellcheck="false" autocomplete="off"
+             placeholder="Search, or type tag:pixel-art w:>=64  ( / )">
+    </div>
+    <div id="sizes">
+      <button data-size="96">S</button>
+      <button data-size="128">M</button>
+      <button data-size="192">L</button>
+      <button data-size="256">XL</button>
+    </div>
+  </div>
+
+  <div id="grid" tabindex="0">
+    <div id="canvas"></div>
+    <p id="empty" hidden>Nothing matches.</p>
+    <div id="dropzone" hidden>
+      <div>
+        <strong id="drop-title">Drop to import</strong>
+        <span id="drop-hint">Files, folders and zips go into the vault</span>
+      </div>
+    </div>
+  </div>
+
+  <footer id="statusbar">
+    <span id="count"></span>
+    <span id="selection"></span>
+    <span class="spacer"></span>
+    <span id="progress"></span>
+    <span id="capabilities"></span>
+  </footer>
+</main>
+
+<aside id="inspector" hidden>
+  <header>
+    <div class="titles">
+      <b id="ins-heading"></b>
+      <span id="ins-subheading"></span>
+    </div>
+    <button id="ins-close" class="ghost" title="Close ( i )">&times;</button>
+  </header>
+
+  <div id="ins-body">
+    <div id="ins-preview"></div>
+
+    <section>
+      <h3>Tags</h3>
+      <div id="ins-tags" class="chiprow"></div>
+      <div class="typeahead">
+        <input id="ins-tag" type="text" placeholder="add a tag" autocomplete="off"
+               spellcheck="false">
+        <ul id="ins-suggest" hidden></ul>
+      </div>
+    </section>
+
+    <div id="ins-actions" class="actions" hidden>
+      <a id="ins-open" class="ghost" target="_blank" rel="noreferrer noopener">Open link</a>
+      <button id="ins-refresh" class="ghost" title="Fetch the page again">Refresh</button>
+    </div>
+
+    <section>
+      <h3>Metadata</h3>
+      <label class="field"><span>Title</span><input id="ins-title-field" type="text"></label>
+      <label class="field"><span>Source</span><input id="ins-source" type="text"></label>
+      <label class="field"><span>URL</span><input id="ins-url" type="text"></label>
+      <label class="field"><span>Licence</span><input id="ins-license" type="text"
+             list="licences"></label>
+      <label class="field" id="ins-caption-field"><span>Caption<button id="ins-describe"
+             class="ghost" title="Describe with the local vision model" hidden>Describe</button></span><textarea
+             id="ins-caption" rows="2"></textarea></label>
+      <label class="field"><span>Notes</span><textarea id="ins-notes" rows="3"></textarea></label>
+      <datalist id="licences">
+        <option value="cc0"><option value="cc-by-4.0"><option value="cc-by-sa-4.0">
+        <option value="mit"><option value="proprietary"><option value="unknown">
+      </datalist>
+    </section>
+
+    <section>
+      <h3>Collections</h3>
+      <div id="ins-collections" class="chiprow"></div>
+      <select id="ins-collection-add"></select>
+    </section>
+
+    <section id="ins-locations-section">
+      <h3>Locations</h3>
+      <ul id="ins-locations"></ul>
+    </section>
+  </div>
+</aside>
+
+<div id="quicklook" hidden>
+  <div id="ql-stage"></div>
+  <div id="ql-bar">
+    <span id="ql-title"></span>
+    <span id="ql-meta"></span>
+    <span class="spacer"></span>
+    <span class="hint">&larr; &rarr; move &middot; space close &middot; r reveal &middot; c copy</span>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

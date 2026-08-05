@@ -1,0 +1,568 @@
+/* Two panes and a slide-over, sized for a 13" laptop.
+   The layout choice that matters: there is no permanently docked third pane. On
+   a 1440px-effective screen one costs about 480px of chrome alongside the
+   sidebar and leaves room for four thumbnails per row. Quick Look covers
+   everything; the inspector is open only while something is being edited, and
+   for that stretch the grid reflows around it rather than hiding cells
+   underneath, because the selection you are editing is the one thing that must
+   stay visible. */
+
+:root {
+  --bg: #16181d;
+  --panel: #1c1f26;
+  --panel-2: #232732;
+  --line: #2c313c;
+  --text: #d9dde6;
+  --dim: #838b9c;
+  --accent: #5aa9f0;
+  --accent-dim: #2c4f74;
+  --danger: #e0705f;
+  --cell: 128px;
+  --radius: 6px;
+  --inspector: 320px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+body { display: flex; }
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 3px 9px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--dim); }
+button.ghost { background: none; border-color: transparent; color: var(--dim); }
+button.ghost:hover { color: var(--text); background: var(--panel-2); }
+button.on { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+
+input {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  width: 100%;
+}
+input:focus { outline: none; border-color: var(--accent); }
+
+.spacer { flex: 1; }
+
+/* --- sidebar --- */
+
+#sidebar {
+  width: 210px;
+  flex: none;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  padding-bottom: 20px;
+}
+body.no-sidebar #sidebar { display: none; }
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  z-index: 2;
+}
+.sidebar-head h1 { font-size: 13px; margin: 0; flex: 1; letter-spacing: .3px; }
+
+.facet { padding: 10px 12px 0; }
+.facet h2 {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: var(--dim);
+  margin: 0 0 6px;
+}
+.facet ul { list-style: none; margin: 4px 0 0; padding: 0; max-height: 320px; overflow-y: auto; }
+.facet li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 2px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.facet li:hover { background: var(--panel-2); }
+.facet li.active { background: var(--accent-dim); }
+.facet li .name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.facet li .count { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 11px; }
+.facet li .ns { color: var(--dim); font-size: 10px; }
+
+/* --- query row --- */
+
+main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+#queryrow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+#querybox {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 3px 6px;
+  min-width: 0;
+}
+#querybox:focus-within { border-color: var(--accent); }
+#querybox input { background: none; border: none; flex: 1; min-width: 120px; padding: 2px; }
+#querybox input:focus { border: none; }
+
+#chips { display: contents; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent-dim);
+  border-radius: 10px;
+  padding: 1px 4px 1px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.chip.negated { background: #5d3340; }
+.chip button {
+  background: none;
+  border: none;
+  color: #cfe2f5;
+  padding: 0 3px;
+  line-height: 1;
+  cursor: pointer;
+}
+.chip button:hover { color: #fff; }
+
+#sizes { display: flex; gap: 2px; flex: none; }
+#sizes button { padding: 3px 7px; }
+
+/* --- grid --- */
+
+#grid { flex: 1; overflow-y: auto; position: relative; outline: none; }
+#canvas { position: relative; }
+
+#empty { color: var(--dim); text-align: center; margin-top: 60px; }
+
+.cell {
+  position: absolute;
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  background:
+    repeating-conic-gradient(#2a2e37 0% 25%, #22262e 0% 50%) 50% / 16px 16px;
+  border: 2px solid transparent;
+}
+.cell.selected { border-color: var(--accent); }
+.cell.cursor::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid #fff6;
+  border-radius: 3px;
+  pointer-events: none;
+}
+.cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+/* Nearest-neighbour so pixel art stays crisp; the browser's default smoothing
+   turns a 32px sprite scaled to 128px into mush. */
+.cell img.pixelated { image-rendering: pixelated; }
+
+.cell .label {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  padding: 12px 5px 3px;
+  font-size: 10px;
+  line-height: 1.3;
+  background: linear-gradient(transparent, #000c 55%);
+  opacity: 0;
+  transition: opacity .1s;
+  pointer-events: none;
+}
+.cell:hover .label, .cell.selected .label { opacity: 1; }
+.cell .label b { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell .label span { color: #b9c0cd; }
+
+.cell .badge {
+  position: absolute;
+  top: 3px; right: 3px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: #000a;
+  color: #cbd2df;
+}
+.cell.missing { opacity: .45; }
+.cell.missing .badge { background: var(--danger); color: #fff; }
+
+/* --- status bar --- */
+
+#statusbar {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 5px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+#progress { color: var(--accent); }
+
+/* --- quick look --- */
+
+#quicklook {
+  position: fixed;
+  inset: 0;
+  background: #0c0e12f2;
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+}
+#quicklook[hidden] { display: none; }
+
+#ql-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  min-height: 0;
+}
+#ql-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background:
+    repeating-conic-gradient(#2a2e37 0% 25%, #22262e 0% 50%) 50% / 20px 20px;
+  border-radius: 4px;
+}
+#ql-stage img.pixelated { image-rendering: pixelated; }
+#ql-stage audio { width: min(560px, 80vw); }
+#ql-stage .stack { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+
+/* A detected spritesheet plays its frames rather than showing the sheet: the
+   sheet is what the file looks like, the animation is what it is. */
+#ql-stage .sheet {
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  border-radius: 4px;
+}
+
+#ql-bar {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+#ql-meta, .hint { color: var(--dim); }
+
+/* --- inspector --- */
+
+#inspector {
+  width: var(--inspector);
+  flex: none;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#inspector[hidden] { display: none; }
+
+#inspector header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px 9px 14px;
+  border-bottom: 1px solid var(--line);
+}
+#inspector header .titles { flex: 1; min-width: 0; }
+#ins-heading {
+  display: block;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#ins-subheading { color: var(--dim); font-size: 11px; }
+
+#ins-body { flex: 1; overflow-y: auto; padding: 0 14px 24px; }
+#ins-body section { padding-top: 14px; }
+#ins-body h3 {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: var(--dim);
+  margin: 0 0 7px;
+}
+
+#ins-preview {
+  display: flex;
+  gap: 4px;
+  margin-top: 12px;
+  align-items: center;
+}
+#ins-preview img {
+  width: 62px;
+  height: 62px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: repeating-conic-gradient(#2a2e37 0% 25%, #22262e 0% 50%) 50% / 12px 12px;
+}
+#ins-preview img.pixelated { image-rendering: pixelated; }
+#ins-preview .more { color: var(--dim); font-size: 11px; }
+
+.chiprow { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 7px; }
+.tagchip {
+  display: inline-flex;
+  align-items: center;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 11px;
+  overflow: hidden;
+}
+/* Manual tags read as solid, derived ones as quiet. The distinction is not
+   decoration: only the solid ones can be removed, and seeing which is which
+   before clicking is the difference between the panel being predictable and
+   being a guess. */
+.tagchip.manual { background: var(--accent-dim); border-color: var(--accent-dim); }
+.tagchip.partial { opacity: .6; }
+.tagchip .tagname {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 1px 7px;
+  color: inherit;
+  font-size: 11px;
+}
+.tagchip .tagname:hover { color: #fff; background: #ffffff14; }
+.tagchip .tagcount { color: var(--dim); padding-right: 6px; font-size: 10px; }
+.tagchip .tagdrop {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 1px 6px 1px 2px;
+  color: var(--dim);
+  line-height: 1;
+}
+.tagchip .tagdrop:hover { color: var(--danger); }
+
+.morechips {
+  background: none;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--dim);
+  font-size: 11px;
+  padding: 1px 8px;
+}
+
+.typeahead { position: relative; }
+.typeahead ul {
+  position: absolute;
+  left: 0; right: 0; top: 100%;
+  margin: 2px 0 0;
+  padding: 3px;
+  list-style: none;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px #000a;
+  z-index: 5;
+}
+.typeahead ul[hidden] { display: none; }
+.typeahead li {
+  display: flex;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.typeahead li span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.typeahead li em { color: var(--dim); font-style: normal; font-size: 11px; }
+.typeahead li:hover, .typeahead li.on { background: var(--accent-dim); }
+
+/* A reference's two actions, above the fields they act on. */
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.actions[hidden] { display: none; }
+.actions .ghost {
+  flex: 1;
+  text-align: center;
+  padding: 5px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* "Open the page" is an anchor because it navigates, and every ghost rule above
+   is element-qualified to `button` - so without this it renders as a default
+   underlined browser link sitting beside a button. */
+.actions a.ghost {
+  color: var(--dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  text-decoration: none;
+}
+.actions a.ghost:hover { color: var(--text); background: var(--panel-2); }
+
+/* The Describe button sits on the Caption label rather than under the field,
+   because it acts on the field. Tinted, or it reads as part of the label - a
+   ghost button next to dim label text is indistinguishable from more label. */
+#ins-caption-field span { display: flex; align-items: center; gap: 6px; }
+#ins-caption-field span button {
+  padding: 0 6px;
+  font-size: 10px;
+  color: var(--accent);
+  border-color: var(--line);
+}
+#ins-caption:disabled { color: var(--dim); }
+
+/* The fullscreen view of a link: its preview, then the URL big enough to read
+   and click. */
+#ql-stage .linkout {
+  color: var(--accent);
+  font-size: 15px;
+  word-break: break-all;
+  max-width: min(680px, 80vw);
+  text-align: center;
+}
+#ql-stage .linknotes {
+  color: var(--dim);
+  font-size: 13px;
+  max-width: min(680px, 80vw);
+  margin: 0;
+  text-align: center;
+}
+
+.field { display: block; margin-bottom: 6px; }
+.field[hidden] { display: none; }
+.field span { display: block; color: var(--dim); font-size: 11px; margin-bottom: 2px; }
+.field textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  width: 100%;
+  resize: vertical;
+}
+.field textarea:focus { outline: none; border-color: var(--accent); }
+.field input::placeholder { color: #6d768a; font-style: italic; }
+
+#ins-collection-add {
+  font: inherit;
+  width: 100%;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+}
+
+#ins-locations { list-style: none; margin: 0; padding: 0; }
+#ins-locations li {
+  font-size: 11px;
+  color: var(--dim);
+  word-break: break-all;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--line);
+}
+#ins-locations li.absent { color: var(--danger); text-decoration: line-through; }
+
+/* Sidebar rows only reveal their delete on hover: a collection is deletable and
+   the tags and roots beside it are not, and a button sitting there permanently
+   would say otherwise. */
+.facet li .rowdrop {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  color: var(--dim);
+  line-height: 1;
+  visibility: hidden;
+}
+.facet li:hover .rowdrop { visibility: visible; }
+.facet li .rowdrop:hover { color: var(--danger); }
+/* Export is not destructive, so it does not get the warning colour the delete
+   beside it has earned. */
+.facet li .rowdrop:first-of-type:hover { color: var(--accent); }
+
+.facet h2 button { float: right; padding: 0 5px; font-size: 12px; line-height: 1.1; }
+
+/* --- import dropzone --- */
+
+#dropzone {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #16181deb;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  z-index: 10;
+  pointer-events: none;
+  text-align: center;
+}
+#dropzone[hidden] { display: none; }
+#dropzone strong { display: block; font-size: 15px; margin-bottom: 4px; }
+#dropzone span { color: var(--dim); }
+
+/* --- toast --- */
+
+#toast {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 7px 14px;
+  z-index: 40;
+  box-shadow: 0 6px 20px #0008;
+}
+#toast[hidden] { display: none; }
